@@ -8,6 +8,19 @@ The custom board is **not routed yet**, so this builds for the off-the-shelf
 `esp32c6_devkitc` with a Core1121 wiring overlay. When the board is routed, add a
 custom board definition and point `.board` at it.
 
+## Targets
+
+The same app builds for two host boards (each with its own `boards/<board>.overlay`
++ `.conf`); `.board` selects the default:
+
+| Board | Build | Footprint | Notes |
+|-------|-------|-----------|-------|
+| `esp32c6_devkitc/esp32c6/hpcore` | default (`.board`) | ~425 KB flash / ~106 KB SRAM | needs the hal_espressif C6 SPI workaround (see below) |
+| `blackpill_f411ce` | `west build -b blackpill_f411ce` | ~213 KB flash / ~38 KB SRAM | **bare, non-MCUboot flash layout** (384 KB code + 128 KB storage sector); no OTA. STM32F4's 128 KB top sector is the smallest erasable unit, so `storage_partition` = that whole sector. |
+
+Same pin *functions*, different pin *numbers* per board — see each overlay header
+for its wiring table.
+
 ## Where this lives
 
 This is the *inner project* of the reused e-ink dev environment. It is placed at
