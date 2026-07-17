@@ -1,0 +1,6 @@
+[submodule "modules/usp_zephyr"]
+	path = modules/usp_zephyr
+	url = https://github.com/Lora-net/usp_zephyr
+[submodule "modules/usp"]
+	path = modules/usp
+	url = https://github.com/Lora-net/usp

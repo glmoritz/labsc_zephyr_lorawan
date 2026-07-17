@@ -1,0 +1,456 @@
+/*
+ * Copyright (c) 2025 Semtech Corporation
+ * Copyright (c) 2026 Guilherme Luiz Moritz
+ *
+ * SPDX-License-Identifier: Apache-2.0
+ *
+ * Board overlay: ESP32-C6-DevKitC (interim host) + Waveshare Core1121-XF (LR1121).
+ *
+ * NOTE: the custom board is not routed yet. The GPIO assignments below are the
+ * INTERIM breadboard wiring between an esp32c6_devkitc and a Core1121 module.
+ * Change them to match how you physically wire it (and later, the routed board).
+ *
+ * Derived from usp_zephyr boards/shields/semtech_lr11xxmb1xxs. The large
+ * tx-power / rssi / current tables further down are the LR1121-MB1 reference
+ * values kept as a STARTING POINT; they are BOM-specific and must be
+ * recalibrated for the Core1121-XF for correct RF performance.
+ */
+
+#include <zephyr/dt-bindings/usp/lr11xx.h>
+#include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
+
+/* LoRaWAN credentials (DevEUI / JoinEUI / AppKey / region) live here. */
+#include "user_keys.overlay"
+
+/ {
+	chosen {
+		zephyr,lorawan-transceiver = &lora_lr1121;
+	};
+	aliases {
+		lora-transceiver = &lora_lr1121;
+		tc0 = &tc0;
+		tc1 = &tc1;
+		keepalive-out = &keepalive_out;
+		hw-wdt-out = &hw_wdt_out;
+	};
+
+	/*
+	 * Failsafe / watchdog pulse outputs.
+	 *
+	 * These MUST be toggled from software (NOT hardware PWM/LEDC): the whole
+	 * point is that the pulses STOP when the firmware hangs. LEDC would keep
+	 * running autonomously through a CPU hang and defeat the failsafe.
+	 *   - keepalive_out retriggers an external 555 monostable that gates the
+	 *     power circuit; stop toggling -> 555 times out -> power shuts down.
+	 *   - hw_wdt_out kicks an external hardware watchdog.
+	 * Gate both on an application-liveness flag, not a bare kernel timer (the
+	 * kernel keeps ticking even if the app thread is deadlocked). Both pins are
+	 * Hi-Z at reset until firmware drives them, so size the external timeouts to
+	 * survive boot. (gpio-leds is reused only as a generic GPIO-output binding.)
+	 */
+	failsafe_outputs {
+		compatible = "gpio-leds";
+		keepalive_out: keepalive {
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D21 */
+			label = "555 monostable keep-alive";
+		};
+		hw_wdt_out: hw-wdt {
+			gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>;   /* D22 */
+			label = "external hardware watchdog kick";
+		};
+	};
+};
+
+/* LoRa SPI pins: SCLK=GPIO6, MISO=GPIO2, MOSI=GPIO7. NSS is driven as a GPIO
+ * chip-select (cs-gpios, GPIO10), so CSEL is intentionally left out of pinctrl. */
+&pinctrl {
+	spim2_lora: spim2_lora {
+		group1 {
+			pinmux = <SPIM2_MISO_GPIO2>,
+				 <SPIM2_SCLK_GPIO6>;
+		};
+		group2 {
+			pinmux = <SPIM2_MOSI_GPIO7>;
+			output-low;
+		};
+	};
+};
+
+/* i2c0 shares GPIO6/GPIO7 with spi2; disable it so the LoRa SPI bus owns them. */
+&i2c0 {
+	status = "disabled";
+};
+
+/* Not used by the LoRaWAN node; disabled to cut footprint and pin conflicts. */
+&wifi {
+	status = "disabled";
+};
+&esp32_bt_hci {
+	status = "disabled";
+};
+&ieee802154 {
+	status = "disabled";
+};
+
+&spi2 {
+	status = "okay";
+	pinctrl-0 = <&spim2_lora>;
+	pinctrl-names = "default";
+
+	/* One CS per device on the shared bus, indexed by each child's `reg`. */
+	cs-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>,   /* reg 0: LR1121 NSS  (D10) */
+		   <&gpio0 19 GPIO_ACTIVE_LOW>,   /* reg 1: MAX6675 #1  (D19) */
+		   <&gpio0 20 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (D20) */
+
+	lora_lr1121: lora@0 {
+		compatible = "semtech,lr1121";
+		reg = <0>;
+		spi-max-frequency = <DT_FREQ_M(16)>;
+
+		/* ---- Control pins wired to the ESP32-C6 dev board headers ----
+		 * Avoid GPIO12/13 (native USB D-/D+ = USB-JTAG), GPIO16/17 (UART0
+		 * console), and strapping GPIO8/9/15.
+		 */
+		reset-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;                       /* D11 */
+		busy-gpios  = <&gpio0 18 GPIO_ACTIVE_HIGH>;                      /* D18 (D0/D1 reserved for UART1; D12 is native-USB) */
+		event-gpios = <&gpio0 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* D3 = LR1121 DIO9 */
+		/* LR1121 DIO7 / DIO8 are broken out on the Core1121 header but unused. */
+
+		/* TODO: confirm against Core1121 R3/R4 population (HP only vs LP+HP). */
+		lf-tx-path = <LR11XX_TX_PATH_LF_LP_HP>;
+
+		lf-clk = <LR11XX_LFCLK_XTAL>;      /* 32.768 kHz XTAL (Y2) on DIO10/DIO11 */
+		reg-mode = <LR11XX_REG_MODE_DCDC>; /* DC-DC (L6 on DCC_SW) */
+
+		/*
+		 * Core1121-XF RF switch: one PE4259 selecting the LF (sub-GHz) vs HF
+		 * (2.4 GHz / L-band) antenna path, driven by LR1121 DIO5 and DIO6.
+		 * Sub-GHz -> DIO6 high; HF / GNSS / WiFi-scan -> DIO5 high.
+		 */
+		rf-sw-enable     = <(LR11XX_DIO5 | LR11XX_DIO6)>;
+		rf-sw-rx-mode    = <LR11XX_DIO6>;
+		rf-sw-tx-mode    = <LR11XX_DIO6>;
+		rf-sw-tx-hp-mode = <LR11XX_DIO6>;
+		rf-sw-tx-hf-mode = <LR11XX_DIO5>;
+		rf-sw-wifi-mode  = <LR11XX_DIO5>;
+		rf-sw-gnss-mode  = <LR11XX_DIO5>;
+
+		/* Core1121 uses a 32 MHz TCXO on XTA powered by VTCXO (Y1). */
+		tcxo-voltage = <LR11XX_TCXO_SUPPLY_1_8V>; /* TODO: confirm TCXO supply voltage */
+		tcxo-wakeup-time = <5>;                   /* ms; TODO: confirm from TCXO datasheet */
+
+		tx-power-cfg-lf-lp =
+		/* power, pa_duty_cycle, pa_hp_sel */
+		<(-15) 0x00 0x00>, /* Expected output power = -17dBm */
+		<(-14) 0x00 0x00>, /* Expected output power = -16dBm */
+		<(-13) 0x00 0x00>, /* Expected output power = -15dBm */
+		<(-12) 0x00 0x00>, /* Expected output power = -14dBm */
+		<(-11) 0x00 0x00>, /* Expected output power = -13dBm */
+		<(-9) 0x00 0x00>, /* Expected output power = -12dBm */
+		<(-8) 0x00 0x00>, /* Expected output power = -11dBm */
+		<(-7) 0x00 0x00>, /* Expected output power = -10dBm */
+		<(-6) 0x00 0x00>, /* Expected output power = -9dBm */
+		<(-5) 0x00 0x00>, /* Expected output power = -8dBm */
+		<(-4) 0x00 0x00>, /* Expected output power = -7dBm */
+		<(-3) 0x00 0x00>, /* Expected output power = -6dBm */
+		<(-2) 0x00 0x00>, /* Expected output power = -5dBm */
+		<(-1) 0x00 0x00>, /* Expected output power = -4dBm */
+		<( 0) 0x00 0x00>, /* Expected output power = -3dBm */
+		<( 1) 0x00 0x00>, /* Expected output power = -2dBm */
+		<( 2) 0x00 0x00>, /* Expected output power = -1dBm */
+		<( 3) 0x00 0x00>, /* Expected output power = 0dBm */
+		<( 3) 0x01 0x00>, /* Expected output power = 1dBm */
+		<( 4) 0x01 0x00>, /* Expected output power = 2dBm */
+		<( 7) 0x00 0x00>, /* Expected output power = 3dBm */
+		<( 8) 0x00 0x00>, /* Expected output power = 4dBm */
+		<( 9) 0x00 0x00>, /* Expected output power = 5dBm */
+		<( 10) 0x00 0x00>, /* Expected output power = 6dBm */
+		<( 12) 0x00 0x00>, /* Expected output power = 7dBm */
+		<( 13) 0x00 0x00>, /* Expected output power = 8dBm */
+		<( 14) 0x00 0x00>, /* Expected output power = 9dBm */
+		<( 13) 0x01 0x00>, /* Expected output power = 10dBm */
+		<( 13) 0x02 0x00>, /* Expected output power = 11dBm */
+		<( 14) 0x02 0x00>, /* Expected output power = 12dBm */
+		<( 14) 0x03 0x00>, /* Expected output power = 13dBm */
+		<( 14) 0x04 0x00>, /* Expected output power = 14dBm */
+		<( 14) 0x07 0x00>; /* Expected output power = 15dBm */
+
+		tx-power-cfg-lf-hp =
+		/* power, pa_duty_cycle, pa_hp_sel */
+		<(  9) 0x00 0x00>, /* Expected output power = -9dBm */
+		<( 10) 0x00 0x00>, /* Expected output power = -8dBm */
+		<( 11) 0x00 0x00>, /* Expected output power = -7dBm */
+		<( 12) 0x00 0x00>, /* Expected output power = -6dBm */
+		<( 13) 0x00 0x00>, /* Expected output power = -5dBm */
+		<( 13) 0x01 0x00>, /* Expected output power = -4dBm */
+		<( 13) 0x02 0x00>, /* Expected output power = -3dBm */
+		<( 17) 0x02 0x00>, /* Expected output power = -2dBm */
+		<( 14) 0x04 0x00>, /* Expected output power = -1dBm */
+		<( 12) 0x00 0x01>, /* Expected output power = 0dBm */
+		<( 13) 0x00 0x01>, /* Expected output power = 1dBm */
+		<( 13) 0x01 0x01>, /* Expected output power = 2dBm */
+		<( 13) 0x02 0x01>, /* Expected output power = 3dBm */
+		<( 15) 0x00 0x02>, /* Expected output power = 4dBm */
+		<( 15) 0x04 0x01>, /* Expected output power = 5dBm */
+		<( 14) 0x02 0x02>, /* Expected output power = 6dBm */
+		<( 14) 0x01 0x03>, /* Expected output power = 7dBm */
+		<( 17) 0x04 0x02>, /* Expected output power = 8dBm */
+		<( 22) 0x00 0x01>, /* Expected output power = 9dBm */
+		<( 22) 0x01 0x01>, /* Expected output power = 10dBm */
+		<( 22) 0x02 0x01>, /* Expected output power = 11dBm */
+		<( 22) 0x03 0x01>, /* Expected output power = 12dBm */
+		<( 22) 0x00 0x03>, /* Expected output power = 13dBm */
+		<( 22) 0x01 0x03>, /* Expected output power = 14dBm */
+		<( 22) 0x04 0x02>, /* Expected output power = 15dBm */
+		<( 22) 0x01 0x04>, /* Expected output power = 16dBm */
+		<( 22) 0x02 0x04>, /* Expected output power = 17dBm */
+		<( 22) 0x01 0x06>, /* Expected output power = 18dBm */
+		<( 22) 0x03 0x05>, /* Expected output power = 19dBm */
+		<( 22) 0x03 0x07>, /* Expected output power = 20dBm */
+		<( 22) 0x04 0x06>, /* Expected output power = 21dBm */
+		<( 22) 0x04 0x07>; /* Expected output power = 22dBm */
+
+		tx-power-cfg-hf =
+		/* power, pa_duty_cycle, pa_hp_sel */
+		<(-18) 0x04 0x00>, //Expected output power = -18dBm
+		<(-18) 0x04 0x00>, /* Expected output power = -17dBm */
+		<(-17) 0x04 0x00>, /* Expected output power = -16dBm */
+		<(-16) 0x04 0x00>, /* Expected output power = -15dBm */
+		<(-15) 0x04 0x00>, /* Expected output power = -14dBm */
+		<(-14) 0x04 0x00>, /* Expected output power = -13dBm */
+		<(-14) 0x04 0x00>, /* Expected output power = -12dBm */
+		<(-12) 0x04 0x00>, /* Expected output power = -11dBm */
+		<(-10) 0x04 0x00>, /* Expected output power = -10dBm */
+		<( -9) 0x04 0x00>, /* Expected output power = -9dBm */
+		<( -8) 0x04 0x00>, /* Expected output power = -8dBm */
+		<( -7) 0x04 0x00>, /* Expected output power = -7dBm */
+		<( -6) 0x04 0x00>, /* Expected output power = -6dBm */
+		<( -5) 0x04 0x00>, /* Expected output power = -5dBm */
+		<( -4) 0x04 0x00>, /* Expected output power = -4dBm */
+		<( -3) 0x04 0x00>, /* Expected output power = -3dBm */
+		<( -2) 0x03 0x00>, /* Expected output power = -2dBm */
+		<( -1) 0x04 0x00>, /* Expected output power = -1dBm */
+		<(  0) 0x04 0x00>, /* Expected output power = 0dBm */
+		<(  1) 0x00 0x00>, /* Expected output power = 1dBm */
+		<(  2) 0x00 0x00>, /* Expected output power = 2dBm */
+		<(  4) 0x04 0x00>, /* Expected output power = 3dBm */
+		<(  5) 0x04 0x00>, /* Expected output power = 4dBm */
+		<(  6) 0x04 0x00>, /* Expected output power = 5dBm */
+		<(  7) 0x04 0x00>, /* Expected output power = 6dBm */
+		<(  8) 0x04 0x00>, /* Expected output power = 7dBm */
+		<(  9) 0x04 0x00>, /* Expected output power = 8dBm */
+		<( 10) 0x04 0x00>, /* Expected output power = 9dBm */
+		<( 11) 0x04 0x00>, /* Expected output power = 10dBm */
+		<( 12) 0x03 0x00>, /* Expected output power = 11dBm */
+		<( 13) 0x04 0x00>, /* Expected output power = 12dBm */
+		<( 13) 0x00 0x00>; /* Expected output power = 13dBm */
+
+
+		/* Tune is G4 G5 G6 G7 G8 G9 G10 G11 G12 G13
+		 * G13hp1 G13hp2 G13hp3 G13hp4 G13hp5 G13hp6 G13hp7
+		 */
+		rssi-calibration-lf-offset = <0>;
+		rssi-calibration-lf-tune = <12 12 14 0 1 3 4 4 3 6 6 6 6 6 6 6 6>;
+
+		rssi-calibration-mf-offset = <0>;
+		rssi-calibration-mf-tune = <2 2 2 3 3 4 5 4 4 6 5 5 6 6 6 7 6>;
+
+		rssi-calibration-hf-offset = <2030>;
+		rssi-calibration-hf-tune = <6 7 6 4 3 4 14 12 14 12 12 12 12 8 8 9 9>;
+
+		// Current consumptions
+		tx-dbm-to-ua-reg-mode-dcdc-lf-lp-vreg = <
+		10820 /* -17 dBm */
+		10980 /* -16 dBm */
+		11060 /* -15 dBm */
+		11160 /* -14 dBm */
+		11300 /* -13 dBm */
+		11430 /* -12 dBm */
+		11550 /* -11 dBm */
+		11680 /* -10 dBm */
+		11930 /*  -9 dBm */
+		12170 /*  -8 dBm */
+		12420 /* -7 dBm */
+		12650 /* -6 dBm */
+		12900 /* -5 dBm */
+		13280 /* -4 dBm */
+		13600 /* -3 dBm */
+		14120 /* -2 dBm */
+		14600 /* -1 dBm */
+		15090 /*  0 dBm */
+		15780 /*  1 dBm */
+		16490 /*  2 dBm */
+		17250 /*  3 dBm */
+		17850 /*  4 dBm */
+		18720 /*  5 dBm */
+		19640 /*  6 dBm */
+		20560 /*  7 dBm */
+		21400 /*  8 dBm */
+		22620 /*  9 dBm */
+		23720 /* 10 dBm */
+		25050 /* 11 dBm */
+		26350 /* 12 dBm */
+		27870 /* 13 dBm */
+		28590 /* 14 dBm */
+		37820 /* 15 dBm */
+		>;
+
+		tx-dbm-to-ua-reg-mode-ldo-lf-lp-vreg = <
+		14950 /* -17 dBm */
+		15280 /* -16 dBm */
+		15530 /* -15 dBm */
+		15770 /* -14 dBm */
+		16020 /* -13 dBm */
+		16290 /* -12 dBm */
+		16550 /* -11 dBm */
+		16760 /* -10 dBm */
+		17280 /*  -9 dBm */
+		17770 /*  -8 dBm */
+		18250 /* -7 dBm */
+		18750 /* -6 dBm */
+		19250 /* -5 dBm */
+		19960 /* -4 dBm */
+		20710 /* -3 dBm */
+		21620 /* -2 dBm */
+		22570 /* -1 dBm */
+		23570 /*  0 dBm */
+		24990 /*  1 dBm */
+		26320 /*  2 dBm */
+		27830 /*  3 dBm */
+		29070 /*  4 dBm */
+		30660 /*  5 dBm */
+		32490 /*  6 dBm */
+		34220 /*  7 dBm */
+		35820 /*  8 dBm */
+		38180 /*  9 dBm */
+		40220 /* 10 dBm */
+		42800 /* 11 dBm */
+		45030 /* 12 dBm */
+		47900 /* 13 dBm */
+		51220 /* 14 dBm */
+		66060 /* 15 dBm */
+		>;
+
+		tx-dbm-to-ua-reg-mode-dcdc-lf-hp-vbat = <
+		27750  /*  -9 dBm */
+		29100  /*  -8 dBm */
+		30320  /*  -7 dBm */
+		31650  /*  -6 dBm */
+		34250  /*  -5 dBm */
+		35550  /*  -4 dBm */
+		36770  /*  -3 dBm */
+		39250  /*  -2 dBm */
+		41480  /*  -1 dBm */
+		43820  /*   0 dBm */
+		46000  /*  1 dBm */
+		49020  /*  2 dBm */
+		50900  /*  3 dBm */
+		54200  /*  4 dBm */
+		56330  /*  5 dBm */
+		59050  /*  6 dBm */
+		62210  /*  7 dBm */
+		65270  /*  8 dBm */
+		68600  /*  9 dBm */
+		71920  /* 10 dBm */
+		75500  /* 11 dBm */
+		79500  /* 12 dBm */
+		84130  /* 13 dBm */
+		88470  /* 14 dBm */
+		92200  /* 15 dBm */
+		94340  /* 16 dBm */
+		96360  /* 17 dBm */
+		98970  /* 18 dBm */
+		102220 /* 19 dBm */
+		106250 /* 20 dBm */
+		111300 /* 21 dBm */
+		113040 /* 22 dBm */
+		>;
+
+		tx-dbm-to-ua-reg-mode-ldo-lf-hp-vbat = <
+		31310  /*  -9 dBm */
+		32700  /*  -8 dBm */
+		33970  /*  -7 dBm */
+		35270  /*  -6 dBm */
+		37900  /*  -5 dBm */
+		39140  /*  -4 dBm */
+		40380  /*  -3 dBm */
+		42860  /*  -2 dBm */
+		45150  /*  -1 dBm */
+		47400  /*   0 dBm */
+		49600  /*  1 dBm */
+		52600  /*  2 dBm */
+		54460  /*  3 dBm */
+		57690  /*  4 dBm */
+		59840  /*  5 dBm */
+		62550  /*  6 dBm */
+		65750  /*  7 dBm */
+		68520  /*  8 dBm */
+		72130  /*  9 dBm */
+		75230  /* 10 dBm */
+		78600  /* 11 dBm */
+		82770  /* 12 dBm */
+		87450  /* 13 dBm */
+		91700  /* 14 dBm */
+		95330  /* 15 dBm */
+		97520  /* 16 dBm */
+		99520  /* 17 dBm */
+		102080 /* 18 dBm */
+		105140 /* 19 dBm */
+		109300 /* 20 dBm */
+		114460 /* 21 dBm */
+		116530 /* 22 dBm */
+		>;
+
+		tx-dbm-to-ua-reg-mode-dcdc-hf-vreg = <
+		11800 /* -18 dBm */
+		11800 /* -17 dBm */
+		11800 /* -16 dBm */
+		11900 /* -15 dBm */
+		12020 /* -14 dBm */
+		12120 /* -13 dBm */
+		12230 /* -12 dBm */
+		12390 /* -11 dBm */
+		12540 /* -10 dBm */
+		12740 /*  -9 dBm */
+		12960 /* -8 dBm */
+		13150 /* -7 dBm */
+		13460 /* -6 dBm */
+		13770 /* -5 dBm */
+		14070 /* -4 dBm */
+		14460 /* -3 dBm */
+		15030 /* -2 dBm */
+		15440 /* -1 dBm */
+		16030 /*  0 dBm */
+		16980 /*  1 dBm */
+		17590 /*  2 dBm */
+		18270 /*  3 dBm */
+		19060 /*  4 dBm */
+		19900 /*  5 dBm */
+		20740 /*  6 dBm */
+		21610 /*  7 dBm */
+		22400 /*  8 dBm */
+		23370 /*  9 dBm */
+		24860 /* 10 dBm */
+		26410 /* 11 dBm */
+		26430 /* 12 dBm */
+		27890 /* 13 dBm */
+		>;
+	};
+
+	/*
+	 * Two MAX6675 K-type thermocouple-to-digital converters sharing this bus.
+	 * Read-only devices: SCK + SO(MISO) + CS only (no MOSI); SO tri-states when
+	 * deselected, so they coexist with the LR1121. Max SCK ~4.3 MHz.
+	 */
+	tc0: max6675@1 {
+		compatible = "maxim,max6675";
+		reg = <1>;                          /* CS index 1 -> D19 */
+		spi-max-frequency = <DT_FREQ_M(4)>;
+	};
+
+	tc1: max6675@2 {
+		compatible = "maxim,max6675";
+		reg = <2>;                          /* CS index 2 -> D20 */
+		spi-max-frequency = <DT_FREQ_M(4)>;
+	};
+};
