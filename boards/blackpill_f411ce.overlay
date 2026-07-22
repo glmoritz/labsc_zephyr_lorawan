@@ -7,12 +7,34 @@
  * Board overlay: WeAct STM32F411CE "Black Pill" + Waveshare Core1121-XF (LR1121)
  * + two MAX6675 thermocouples on the shared SPI1 bus.
  *
- * Pin map (user-specified):
- *   SPI1  : SCK=PA5, MISO=PB4, MOSI=PB5 (NSS handled as GPIO chip-selects)
- *   LR1121: NSS=PB3, NRESET=PA4, BUSY=PA1, DIO9/IRQ=PA15
- *   MAX6675 #1 CS=PA3, #2 CS=PA2
- *   Failsafe: 555 keep-alive=PB14, HW watchdog=PB13
- *   UART  : USART1 PA9/PA10 (board default console)
+ * Pin map — DUAL-SOCKET CARRIER. The carrier accepts EITHER this BlackPill OR an
+ * ESP32-C6 mini in overlapped, nested 2.54 mm socket rows, so every net lands on
+ * both. The STM32 is the ANCHOR of the assignment: its SPI/USART pins are fixed
+ * alternate functions, whereas the C6's GPIO matrix can follow anywhere.
+ * Carrier row index b = y / 2.54 counted from the BlackPill's USB-C end.
+ *
+ *   LEFT row                          RIGHT row
+ *   b8  PA12  MAX6675 #1 CS           b6  PA2   USART2 TX (console)
+ *   b9  PA15  LR1121 NSS              b7  PA3   USART2 RX
+ *   b10 PB3   SPI1 SCK                b13 PB1   555 keep-alive
+ *   b11 PB4   SPI1 MISO               b14 PB10  hardware watchdog kick
+ *   b12 PB5   SPI1 MOSI
+ *   b13 PB6   LR1121 NRESET           shared spares: PA7, PB0, PB2
+ *   b14 PB7   MAX6675 #2 CS
+ *   b15 PB8   LR1121 BUSY
+ *   b16 PB9   LR1121 DIO9
+ *
+ * SPI1 uses its PB3/PB4/PB5 alternate mapping (not PA5/PA6/PA7) so all three bus
+ * signals are consecutive on ONE socket row — that single change is what makes
+ * the carrier fanout crossing-free. PA15/PB3/PB4 are JTAG pins with reset
+ * pull-ups: harmless with SWD-only debug, and PA15's pull-up usefully holds
+ * LR1121 NSS deasserted before firmware runs. PA12 is USB D+ (1.5k pull-up on
+ * the BlackPill) — fine for a push-pull CS, which also wants to idle high.
+ * PB2 is BOOT1 and is deliberately kept a spare, never a failsafe output.
+ *
+ * Console moves from USART1 (PA9/PA10) to USART2 (PA2/PA3): PA9/PA10 sit at
+ * carrier rows b5/b6 of the LEFT row, where the C6's neighbours are GND and 3V3
+ * — unusable. USART2 is the only shared UART.
  *
  * The tx-power / rssi / current tables below are LR1121-MB1 reference values and
  * must be recalibrated for the Core1121-XF BOM (same as the esp32c6 overlay).
@@ -26,6 +48,9 @@
 / {
 	chosen {
 		zephyr,lorawan-transceiver = &lora_lr1121;
+		/* Console follows the carrier's shared UART (see header). */
+		zephyr,console = &usart2;
+		zephyr,shell-uart = &usart2;
 	};
 	aliases {
 		lora-transceiver = &lora_lr1121;
@@ -40,36 +65,53 @@
 	failsafe_outputs {
 		compatible = "gpio-leds";
 		keepalive_out: keepalive {
-			gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>;   /* PB14 */
+			gpios = <&gpiob 1 GPIO_ACTIVE_HIGH>;    /* PB1,  b13 (C6 D21) */
 			label = "555 monostable keep-alive";
 		};
 		hw_wdt_out: hw-wdt {
-			gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>;   /* PB13 */
+			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;   /* PB10, b14 (C6 D20) */
 			label = "external hardware watchdog kick";
 		};
 	};
 };
 
+/*
+ * Shared UART. PA9/PA10 (USART1, the board default) are unusable on the carrier:
+ * at rows b5/b6 their ESP32-C6 neighbours are GND and 3V3. USART2 on PA2/PA3 is
+ * the only UART both sockets can reach.
+ */
+&usart1 {
+	status = "disabled";
+};
+
+&usart2 {
+	pinctrl-0 = <&usart2_tx_pa2 &usart2_rx_pa3>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
+	status = "okay";
+};
+
 &spi1 {
 	status = "okay";
-	/* Override the board default SPI1 pinctrl (PA5/PA6/PA7 + PA4 NSS): we use
-	 * PA5/PB4/PB5 and drive every chip-select as a GPIO (PA4 becomes reset). */
-	pinctrl-0 = <&spi1_sck_pa5 &spi1_miso_pb4 &spi1_mosi_pb5>;
+	/* Override the board default SPI1 pinctrl (PA5/PA6/PA7 + PA4 NSS) with the
+	 * PB3/PB4/PB5 alternate mapping, so the whole bus is one contiguous run of
+	 * socket rows b10-b12. Every chip select is driven as a GPIO. */
+	pinctrl-0 = <&spi1_sck_pb3 &spi1_miso_pb4 &spi1_mosi_pb5>;
 	pinctrl-names = "default";
 
 	/* One CS per device on the shared bus, indexed by each child's `reg`. */
-	cs-gpios = <&gpiob 3 GPIO_ACTIVE_LOW>,   /* reg 0: LR1121 NSS  (PB3) */
-		   <&gpioa 3 GPIO_ACTIVE_LOW>,   /* reg 1: MAX6675 #1  (PA3) */
-		   <&gpioa 2 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (PA2) */
+	cs-gpios = <&gpioa 15 GPIO_ACTIVE_LOW>,  /* reg 0: LR1121 NSS  (PA15, b9)  */
+		   <&gpioa 12 GPIO_ACTIVE_LOW>,  /* reg 1: MAX6675 #1  (PA12, b8)  */
+		   <&gpiob 7 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (PB7,  b14) */
 
 	lora_lr1121: lora@0 {
 		compatible = "semtech,lr1121";
 		reg = <0>;
 		spi-max-frequency = <DT_FREQ_M(16)>;
 
-		reset-gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;                        /* PA4 */
-		busy-gpios  = <&gpioa 1 GPIO_ACTIVE_HIGH>;                       /* PA1 */
-		event-gpios = <&gpioa 15 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;   /* PA15 = DIO9 */
+		reset-gpios = <&gpiob 6 GPIO_ACTIVE_LOW>;                        /* PB6, b13 (C6 D1)  */
+		busy-gpios  = <&gpiob 8 GPIO_ACTIVE_HIGH>;                       /* PB8, b15 (C6 D10) */
+		event-gpios = <&gpiob 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* PB9, b16 (C6 D11) = DIO9 */
 
 		/* TODO: confirm against Core1121 R3/R4 population (HP only vs LP+HP). */
 		lf-tx-path = <LR11XX_TX_PATH_LF_LP_HP>;

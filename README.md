@@ -15,8 +15,8 @@ The same app builds for two host boards (each with its own `boards/<board>.overl
 
 | Board | Build | Footprint | Notes |
 |-------|-------|-----------|-------|
-| `esp32c6_devkitc/esp32c6/hpcore` | default (`.board`) | ~425 KB flash / ~106 KB SRAM | needs the hal_espressif C6 SPI workaround (see below) |
-| `blackpill_f411ce` | `west build -b blackpill_f411ce` | ~213 KB flash / ~38 KB SRAM | **bare, non-MCUboot flash layout** (384 KB code + 128 KB storage sector); no OTA. STM32F4's 128 KB top sector is the smallest erasable unit, so `storage_partition` = that whole sector. |
+| `esp32c6_devkitc/esp32c6/hpcore` | default (`.board`) | ~426 KB flash / ~106 KB SRAM | needs the hal_espressif C6 SPI workaround (see below) |
+| `blackpill_f411ce` | `west build -b blackpill_f411ce` | ~219 KB flash / ~38 KB SRAM | **bare, non-MCUboot flash layout** (384 KB code + 128 KB storage sector); no OTA. STM32F4's 128 KB top sector is the smallest erasable unit, so `storage_partition` = that whole sector. |
 
 Same pin *functions*, different pin *numbers* per board — see each overlay header
 for its wiring table.
@@ -53,32 +53,108 @@ cd labsc_zephyr_lorawan
 `setup.sh` is safe to re-run. It does `git submodule update --init --recursive` and
 then applies the patches in `patches/` (see *Known workarounds* below).
 
-## Pin map (ESP32-C6 dev board ⇄ Core1121 + peripherals)
+## Carrier pin map (one board, either MCU)
 
-Full assignment the overlay assumes. All peripherals share the C6's single
-general-purpose SPI (`spi2`); each device just adds one chip-select. Change the
-GPIOs in the overlay if you wire it differently.
+The target hardware is a **dual-socket carrier**: it accepts *either* an ESP32-C6
+mini *or* a WeAct BlackPill F411CE, in overlapped 2.54 mm socket rows, so both
+firmware targets drive the same wiring. The pin assignment below is a **routing
+result, not a preference** — it was derived from the two footprints' real
+geometry to minimise crossings on a 2-layer board.
 
-| Signal | ESP32-C6 (Dxx = GPIOxx) | Notes |
-|--------|-------------------------|-------|
-| SPI SCK  | D6  | shared `spi2` |
-| SPI MISO | D2  | shared `spi2` |
-| SPI MOSI | D7  | shared `spi2` (LR1121 only; MAX6675 is read-only) |
-| LR1121 NSS    | D10 | `cs-gpios` reg 0 |
-| LR1121 NRESET | D11 | active-low |
-| LR1121 BUSY   | D18 | polled every SPI transaction |
-| LR1121 DIO9 (IRQ) | D3 | interrupt line (pull-down) |
-| LR1121 DIO7 / DIO8 | — | broken out on the Core1121 header, unused |
-| MAX6675 #1 CS | D19 | `cs-gpios` reg 1 (node `tc0`) |
-| MAX6675 #2 CS | D20 | `cs-gpios` reg 2 (node `tc1`) |
-| 555 keep-alive pulse | D21 | alias `keepalive-out` — **software-toggled** |
-| HW watchdog kick | D22 | alias `hw-wdt-out` — **software-toggled** |
-| UART1 (yours) | D0 / D1 | not claimed by this overlay |
-| 3V3 / GND | 3V3 / GND | LR1121 + MAX6675 both 3.3 V |
+### How the sockets nest
 
-Reserved / avoid: **D12/D13** (native USB = USB-JTAG), **D16/D17** (UART0
-console), strapping **D8/D9/D15**. Free after all of the above: D4, D5, D8, D9,
-D15, D23.
+The row spacings differ (C6 = 22.86 mm, BlackPill = 15.24 mm), so they cannot
+alternate evenly. Nesting them concentrically is better anyway:
+
+```
+C6-left ▏ BP-left ┊┊┊ BP-right ▏ C6-right
+ −3.81     0.00   ┊┊┊  15.24     19.05      (mm, BlackPill pad 1 at origin)
+```
+
+Place the **ESP32-C6 footprint at (X −1.27, Y +10.16), rotation 0**. Each C6 row
+then sits **3.81 mm outboard of its BlackPill partner row**, offset **5 pitches**
+in Y. Consequences:
+
+- A shared net becomes **one straight 3.81 mm stub** between two adjacent pads.
+- Only the outer (C6) pad ever needs to escape, and it escapes **outward into
+  open board** — no track ever threads between pads.
+- The middle **15.24 mm channel is completely free** for power and the two UART
+  crossings.
+- The Y offset is not arbitrary: it is the only one that lands `GND↔GND` and
+  `5V↔5V` as direct adjacent pairs.
+
+### Assignment
+
+`b` = socket row index, counted from the BlackPill's USB-C end (`y = 2.54·b`).
+
+| b | BlackPill | ESP32-C6 | Net |
+|---|-----------|----------|-----|
+| **LEFT rows — RF + sensors** ||||
+| 8 | PA12 | D4 | MAX6675 #1 CS (`cs-gpios` reg 1, node `tc0`) |
+| 9 | PA15 | D5 | LR1121 NSS (`cs-gpios` reg 0) |
+| 10 | PB3 | D6 | SPI SCK |
+| 11 | PB4 | D7 | SPI MISO |
+| 12 | PB5 | D0 | SPI MOSI |
+| 13 | PB6 | D1 | LR1121 NRESET |
+| 14 | PB7 | D8 | MAX6675 #2 CS (`cs-gpios` reg 2, node `tc1`) |
+| 15 | PB8 | D10 | LR1121 BUSY |
+| 16 | PB9 | D11 | LR1121 DIO9 (IRQ, pull-down) |
+| **RIGHT rows — UART + power control** ||||
+| 6 | PA2 | *(→ D-TX)* | UART TX (console) |
+| 7 | PA3 | *(→ D-RX)* | UART RX |
+| 8 | — | TX (GPIO16) | UART TX, C6 end |
+| 9 | — | RX (GPIO17) | UART RX, C6 end |
+| 11 | PA7 | D23 | spare |
+| 12 | PB0 | D22 | spare |
+| 13 | PB1 | D21 | 555 keep-alive (alias `keepalive-out`) |
+| 14 | PB10 | D20 | HW watchdog kick (alias `hw-wdt-out`) |
+| 15 | PB2 | D19 | spare (PB2 = BOOT1 — kept off safety nets) |
+| 18 | GND | GND | direct adjacency |
+| 19 | 5V | 5V | direct adjacency |
+
+LR1121 DIO7/DIO8 are broken out on the Core1121 header and unused.
+
+### Why these pins and not others
+
+- **SPI1 uses its PB3/PB4/PB5 alternate mapping**, not the PA5/PA6/PA7 default.
+  That single change is what makes the fanout crossing-free: all three bus
+  signals land consecutively on one socket row. Verified present in Zephyr as
+  `spi1_sck_pb3` / `spi1_miso_pb4` / `spi1_mosi_pb5`.
+- **The STM32 is the anchor.** Its SPI/USART pins are fixed alternate functions;
+  the ESP32-C6's GPIO matrix can put SPI2 on *any* GPIO. So the constrained side
+  picks first and the C6 follows — the opposite of the intuitive ordering.
+- **Console moves to USART2 (PA2/PA3).** USART1's PA9/PA10 sit at rows b5/b6
+  where the C6's neighbours are GND and 3V3.
+- **D8 (strapping) carries a chip select** — a host-driven output that idles
+  high, which is what the strap wants at boot. Device-driven inputs (BUSY, MISO,
+  UART RX) are deliberately kept off D8/D9/D15.
+- **D15 must be left unconnected.** It selects the JTAG source; pulling it low
+  costs USB-Serial-JTAG debugging. Keeping it high is also what makes D4–D7
+  (the pin-JTAG group) safe to use as ordinary GPIO.
+- **PA15/PB3/PB4 are JTAG pins** with reset pull-ups — harmless with SWD-only
+  debug, and PA15's pull-up usefully holds NSS deasserted before firmware runs.
+- **PA12 is USB D+** on the BlackPill (1.5k pull-up); fine for a push-pull CS,
+  which also wants to idle high.
+
+### There are no "STM-only" pins
+
+The BlackPill has 40 header positions, the C6 mini has 30, so **10 BlackPill
+positions have no C6 neighbour at all** (rows b0–b4, both sides) plus 6 more
+whose C6 neighbour is a power or reset pin. Those are all left **unconnected by
+rule** — wiring anything there would create a function the C6 could not perform.
+
+The C6 is the binding constraint on the whole board: 21 GPIO-ish pins, minus
+D12/D13 (native USB), D15, D9 and D18 (dead pairs), and D2/D3 (their BlackPill
+partners carry the UART) = **14 usable + TX/RX**, of which 11 + UART are used.
+**3 shared spares remain.** The BlackPill's ~16 surplus pins are simply dead
+weight. Both `RST` pins stay NC — there is no global reset net.
+
+Convenient side effect: rows b0–b4 carry no routing, and that is exactly where
+both modules' USB-C connectors point. Keep that end free of tall parts and both
+USB ports are accessible with no cutout.
+
+Reserved / avoid on the C6: **D12/D13** (native USB = USB-JTAG), **D16/D17**
+(UART0 console), strapping **D8/D9/D15**.
 
 **Shared SPI bus.** The ESP32-C6 has only one general-purpose SPI controller, so
 everything hangs off `spi2`. The two MAX6675s are read-only (SCK + SO/MISO + CS,
@@ -95,9 +171,47 @@ size the 555 / watchdog timeouts to survive boot. See the `failsafe_outputs` nod
 in the overlay (aliases `keepalive-out`, `hw-wdt-out`).
 
 **Disabled peripherals.** `i2c0` (shares D6/D7 with SPI), Wi-Fi, BLE and 802.15.4
-are turned off in the overlay. Console/log stay on `uart0` (D16/D17, 115200); to
-reclaim D16/D17, move the console to the native USB (USB-Serial-JTAG) — not done
-yet, ask if you want it.
+are turned off in the overlay. Console/log stay on `uart0` (D16/D17, 115200) on
+the C6 and on `usart2` (PA2/PA3, 115200) on the STM32 — the same carrier net.
+
+## Board notes (carrier, not routed yet)
+
+Design decisions already fixed, recorded here so the layout and the firmware stay
+in agreement:
+
+- **Radio modems are nested too.** The Core1121 (rows 15.24 mm apart) and the
+  Radioenge modem (17.78 mm) cannot overlap concentrically — the socket strips
+  would be 1.27 mm apart and physically collide. Place the **Radioenge footprint
+  at Core1121 + (X +11.43, Y +17.78), rotation 0**: rows then fall at −6.35 / 0 /
+  +11.43 / +15.24, min gap 3.81 mm, 21.59 mm total instead of ~43 mm side by
+  side. Both signal rows face the MCU sockets. Only Radioenge pads 1–5 (GND,
+  AT_RX, AT_TX, VCC) are electrically used; its second row is mechanical.
+- **Place the Core1121 at Y +17.78** relative to the BlackPill origin and its
+  CS / SCLK / RESET pads land on the *exact* y of carrier rows b9 / b10 / b13 —
+  three dead-straight tracks. Only MISO/MOSI cross (the module orders them
+  MOSI-then-MISO), and BUSY jogs one pitch because TC2_CS occupies b14.
+- **Floorplan:** RF + MAX6675 on the left edge, isolated 12 V domain (555,
+  optocouplers, screw terminals) on the right. The alternative costs 9 crossing
+  nets instead of 2.
+- **MAX6675 modules** use right-angle 1×5 headers (`GND, VCC, SCK, CS, SO`) on
+  the **top edge**, which carries no routing. Run SCK + MISO as a short bus along
+  the edge and tap each header off it; only CS1/CS2 arrive individually.
+- **UART crosses the middle channel** on the bottom layer (~4 vias) to reach the
+  Radioenge. Cheaper than the alternative (USART1 on PB6/PB7) which would put
+  UART RX on strapping pin D8, driven by the modem — a boot hazard.
+- **Power:** isolated 12 V → +5 V → the module's `5V` pin → the module's on-board
+  regulator supplies 3V3. A jumper opens the DC-DC path for USB-powered
+  debugging. **Leave the C6's left-hand 5V pad (b19-left) unconnected** — it is
+  internally bonded to the right-hand one, and skipping it removes the only
+  dangerous adjacency on the board (C6 5V 3.81 mm from BlackPill 3V3).
+- ⚠ **Add a Schottky in the DC-DC's +5 V output.** Neither module has an input
+  diode, so closing the jumper with USB plugged in backfeeds the USB host.
+- **Failsafe is de-energize-to-trip and there is no reset net.** The watchdog
+  cuts mains to the oven; a dead processor stays dead until a human intervenes.
+- Estimated cost of the whole inter-socket wiring: **~6–8 vias**.
+- Open SI item: SPI at 16 MHz on 2 layers with a partly fragmented ground return
+  is the fastest signal present. Keep solid GND pour under the ~14 mm LR1121
+  runs; drop to 8 MHz if it misbehaves (no impact at these data rates).
 
 ## Build / flash / debug
 

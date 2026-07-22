@@ -6,9 +6,22 @@
  *
  * Board overlay: ESP32-C6-DevKitC (interim host) + Waveshare Core1121-XF (LR1121).
  *
- * NOTE: the custom board is not routed yet. The GPIO assignments below are the
- * INTERIM breadboard wiring between an esp32c6_devkitc and a Core1121 module.
- * Change them to match how you physically wire it (and later, the routed board).
+ * GPIO assignments follow the DUAL-SOCKET CARRIER pin map: the carrier accepts
+ * EITHER an ESP32-C6 mini OR a WeAct BlackPill F411CE in overlapped, nested
+ * 2.54 mm socket rows, so every net must land on both. The C6 row sits 3.81 mm
+ * outboard of its BlackPill partner row and is offset 5 pitches in Y, which makes
+ * each shared net a single straight stub between two adjacent pads.
+ *
+ * The pin choice is therefore a ROUTING result, not a preference. See README.md
+ * ("Carrier pin map") for the derivation. Constraints honoured here:
+ *   - GPIO12/13 are native USB (USB-Serial-JTAG)      -> never used
+ *   - GPIO15 selects the JTAG source; must float high -> left unconnected
+ *   - GPIO8/9 are strapping; GPIO8 carries a chip select only (idles high),
+ *     never a device-driven input such as BUSY
+ *   - GPIO4-7 are the pin-JTAG group, usable as GPIO only because GPIO15 stays
+ *     high (we debug over USB-JTAG)
+ *   - the C6 GPIO matrix lets SPI2 land anywhere, so the STM32's fixed
+ *     alternate-function pins are the anchor and the C6 bends to match
  *
  * Derived from usp_zephyr boards/shields/semtech_lr11xxmb1xxs. The large
  * tx-power / rssi / current tables further down are the LR1121-MB1 reference
@@ -51,26 +64,31 @@
 	failsafe_outputs {
 		compatible = "gpio-leds";
 		keepalive_out: keepalive {
-			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D21 */
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D21, carrier b13 (BlackPill PB1) */
 			label = "555 monostable keep-alive";
 		};
 		hw_wdt_out: hw-wdt {
-			gpios = <&gpio0 22 GPIO_ACTIVE_HIGH>;   /* D22 */
+			gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;   /* D20, carrier b14 (BlackPill PB10) */
 			label = "external hardware watchdog kick";
 		};
 	};
 };
 
-/* LoRa SPI pins: SCLK=GPIO6, MISO=GPIO2, MOSI=GPIO7. NSS is driven as a GPIO
- * chip-select (cs-gpios, GPIO10), so CSEL is intentionally left out of pinctrl. */
+/*
+ * Shared SPI bus: SCLK=GPIO6, MISO=GPIO7, MOSI=GPIO0.
+ *
+ * These face BlackPill PB3/PB4/PB5 (= SPI1 alternate mapping) at carrier rows
+ * b10/b11/b12, so all three bus signals are consecutive straight stubs. Every
+ * chip select is a GPIO (cs-gpios), so CSEL is deliberately absent from pinctrl.
+ */
 &pinctrl {
 	spim2_lora: spim2_lora {
 		group1 {
-			pinmux = <SPIM2_MISO_GPIO2>,
+			pinmux = <SPIM2_MISO_GPIO7>,
 				 <SPIM2_SCLK_GPIO6>;
 		};
 		group2 {
-			pinmux = <SPIM2_MOSI_GPIO7>;
+			pinmux = <SPIM2_MOSI_GPIO0>;
 			output-low;
 		};
 	};
@@ -97,23 +115,28 @@
 	pinctrl-0 = <&spim2_lora>;
 	pinctrl-names = "default";
 
-	/* One CS per device on the shared bus, indexed by each child's `reg`. */
-	cs-gpios = <&gpio0 10 GPIO_ACTIVE_LOW>,   /* reg 0: LR1121 NSS  (D10) */
-		   <&gpio0 19 GPIO_ACTIVE_LOW>,   /* reg 1: MAX6675 #1  (D19) */
-		   <&gpio0 20 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (D20) */
+	/*
+	 * One CS per device on the shared bus, indexed by each child's `reg`.
+	 * D8 is an ESP32-C6 strapping pin; it carries a chip select precisely
+	 * because a CS is a host-driven output that idles HIGH, which is what the
+	 * strap needs at boot. Never put a device-driven input (BUSY, MISO) there.
+	 */
+	cs-gpios = <&gpio0 5 GPIO_ACTIVE_LOW>,    /* reg 0: LR1121 NSS  (D5,  b9)  */
+		   <&gpio0 4 GPIO_ACTIVE_LOW>,    /* reg 1: MAX6675 #1  (D4,  b8)  */
+		   <&gpio0 8 GPIO_ACTIVE_LOW>;    /* reg 2: MAX6675 #2  (D8,  b14) */
 
 	lora_lr1121: lora@0 {
 		compatible = "semtech,lr1121";
 		reg = <0>;
 		spi-max-frequency = <DT_FREQ_M(16)>;
 
-		/* ---- Control pins wired to the ESP32-C6 dev board headers ----
-		 * Avoid GPIO12/13 (native USB D-/D+ = USB-JTAG), GPIO16/17 (UART0
-		 * console), and strapping GPIO8/9/15.
+		/* ---- Control pins, carrier rows b13/b15/b16 ----
+		 * BUSY and DIO9 are driven by the LR1121, so both are kept OFF the
+		 * strapping pins (D8/D9/D15). NRESET is a host output and idles high.
 		 */
-		reset-gpios = <&gpio0 11 GPIO_ACTIVE_LOW>;                       /* D11 */
-		busy-gpios  = <&gpio0 18 GPIO_ACTIVE_HIGH>;                      /* D18 (D0/D1 reserved for UART1; D12 is native-USB) */
-		event-gpios = <&gpio0 3 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* D3 = LR1121 DIO9 */
+		reset-gpios = <&gpio0 1 GPIO_ACTIVE_LOW>;                        /* D1,  b13 (PB6) */
+		busy-gpios  = <&gpio0 10 GPIO_ACTIVE_HIGH>;                      /* D10, b15 (PB8) */
+		event-gpios = <&gpio0 11 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;   /* D11, b16 (PB9) = DIO9 */
 		/* LR1121 DIO7 / DIO8 are broken out on the Core1121 header but unused. */
 
 		/* TODO: confirm against Core1121 R3/R4 population (HP only vs LP+HP). */
