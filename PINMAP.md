@@ -331,3 +331,55 @@ debugging.
 Open SI item: SPI at 16 MHz on 2 layers with a partly fragmented ground return is
 the fastest signal present. Keep solid GND pour under the ~14 mm LR1121 runs;
 drop to 8 MHz if it misbehaves (no impact at these data rates).
+
+---
+
+## 8. Open items
+
+### Firmware lags this document
+
+The overlays were last re-pinned at commit `f712a69`, **before** §3 and §4 were
+settled. Outstanding delta:
+
+| Item | Overlays have | This doc says |
+|---|---|---|
+| TC2_CS | `D8` / `PB7` | **`D22` / `PB0`** |
+| OPTO_OUT2, OPTO_IN1, OPTO_IN2 | absent | §4 |
+| LED1–4 (BlackPill only) | absent | §6.1 |
+| D8 (b14-left) | used by TC2_CS | **reserved NC** |
+
+Both targets currently build clean, they simply describe the older map. Apply
+§2–§4 to `boards/*.overlay` and re-verify with a build of each target.
+
+### KiCad project (`labsc-radioenge-bluepill`) — not yet touched
+
+1. ⚠ **`symbols/YAAJ_BlackPill.kicad_sym` is a BluePill symbol**, not a
+   BlackPill. It has `PB11` (absent on the F411CE LQFP48) and lacks `PB2`,
+   `PC14`, `PC15`, `VB`. Paired with the `YAAJ_WeAct_BlackPill_2` footprint it
+   will silently mis-map the entire right-hand header. Rebuild it with the U-shape
+   pad numbering: left column pads **1→20** top-to-bottom, right column pads
+   **40→21** top-to-bottom (pad 21 = 5V at bottom-right, pad 40 = VB at
+   top-right). Numbering the right column 21→40 mirrors every right-side pin.
+2. ⚠ **`LoRaModuleRadioenge.kicad_mod` is parallel-numbered, not U-shaped** —
+   pad 1 and pad 16 sit diagonally opposite. Pads 9–16 are unused so that half is
+   harmless, but confirm the module's real pin 1 is at the end this footprint
+   places it, or the used row (`GND, AT_RX, AT_TX, VCC …`) mirrors and AT_RX/AT_TX
+   swap.
+
+### Hardware to verify
+
+- **GPIO8's RGB-LED network must not pull the pin below the strap threshold at
+  reset** (§6.1). Read from a low-resolution schematic; worth one meter check.
+- Confirm the `ESP32C6-Minimal` symbol matches the module silkscreen, and that
+  `D<n>` == `GPIO<n>`.
+- Is mains switched on this PCB, or does the 12 V side drive an external
+  contactor? Assumed the latter (12 V creepage only). A mains relay on-board
+  needs ≥6–8 mm clearance plus a routed slot under the barrier.
+
+### Pre-existing TODOs
+
+- LoRaWAN credentials in `boards/user_keys.overlay` (all zero).
+- `tx-power-cfg-*`, `rssi-calibration-*`, `tx-dbm-to-ua-*` are LR1121-MB1
+  reference values — recalibrate for the Core1121-XF BOM.
+- Application firmware for the thermocouple reads and the liveness-gated
+  keep-alive / watchdog pulses is still the stock periodical-uplink sample.
