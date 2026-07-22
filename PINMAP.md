@@ -79,14 +79,14 @@ Consequences:
 | 5 | 12.70 | PA1 | GND | *dead pair* | |
 | 6 | 15.24 | PA2 | D2 | **UART_TX** | STM32 end (USART2) |
 | 7 | 17.78 | PA3 | D3 | **UART_RX** | STM32 end (USART2) |
-| 8 | 20.32 | PA4 | TX (GPIO16) | **UART_TX** | C6 end (uart0) |
-| 9 | 22.86 | PA5 | RX (GPIO17) | **UART_RX** | C6 end (uart0) |
+| 8 | 20.32 | PA4 | TX (GPIO16) | **OPTO_IN2** ‖ **UART_TX** | ⚠ **split row** — PA4 carries IN2, C6 TX carries UART_TX. The two pads are **not** connected. |
+| 9 | 22.86 | PA5 | RX (GPIO17) | — ‖ **UART_RX** | PA5 unused; spare BlackPill pin |
 | 10 | 25.40 | PA6 | D15 | **OPTO_OUT2** | RFU output — see §5.2 |
 | 11 | 27.94 | PA7 | D23 | **OPTO_IN1** | contactor dry contact |
 | 12 | 30.48 | PB0 | D22 | **TC2_CS** | MAX6675 #2, `cs-gpios` reg 2 |
 | 13 | 33.02 | PB1 | D21 | **KEEPALIVE_555** | software-toggled pulse |
 | 14 | 35.56 | PB10 | D20 | **HW_WDT_KICK** | software-toggled pulse |
-| 15 | 38.10 | PB2 | D19 | **OPTO_IN2** | RFU input, **active high** — see §5.3 |
+| 15 | 38.10 | PB2 | D19 | — ‖ **OPTO_IN2** | ⚠ **split row** — **PB2 left NC** (BOOT1, see §5.3); D19 is IN2's C6 end |
 | 16 | 40.64 | RST | D18 | *dead pair* | no global reset net |
 | 17 | 43.18 | 3V3 | D9 | *dead pair* | D9 strapping, leave NC |
 | 18 | 45.72 | GND | GND | **GND** | direct adjacency ✓ |
@@ -95,6 +95,17 @@ Consequences:
 UART occupies four positions but carries two nets: USART2 is fixed to PA2/PA3
 while the C6's ROM console is fixed to GPIO16/17. Both shift by +2 in the same
 direction, so they are **two parallel diagonals — no crossing, no via.**
+
+**OPTO_IN2 is the one net that is not a geometric pair.** Its C6 end is D19 at
+row b15; its BlackPill end is **PA4 at row b8**, joined by a short bottom-layer
+diagonal — **2 vias.** PA4 is free precisely because the UART's STM32 end is
+PA2/PA3, so nothing else wanted it.
+
+This exists to keep **PB2 unconnected**. PB2 is BOOT1: it has a board pull-down,
+so it can host neither a pulled-up net (the pull-up would fight it, land the pin
+near 1.65 V and break DFU entry) nor anything that must idle high. Leaving it NC
+is worth two vias — and it lets IN2 keep the **fail-safe active-low sense**, so
+*both* optocoupled inputs now fail toward the alarm state.
 
 ---
 
@@ -137,7 +148,7 @@ optocoupler transistor) and **dry-contact inputs**.
 | OUT1 | out | D20 | PB10 | pulse | hardware watchdog kick → cuts mains to oven |
 | OUT2 | out | D15 | PA6 | **active low** | RFU |
 | IN1 | in | D23 | PA7 | **active low** | contactor dry contact — responding / welded detection |
-| IN2 | in | D19 | PB2 | **active high** | RFU — polarity forced by PB2, see §5.3 |
+| IN2 | in | D19 | **PA4** | **active low** | RFU — split net, not a geometric pair (2 vias) |
 
 Plus, on the logic side and **not** a field terminal:
 
@@ -145,15 +156,15 @@ Plus, on the logic side and **not** a field terminal:
 |---|---|---|---|
 | KEEPALIVE_555 | D21 | PB1 | retriggers the 555 monostable gating the power circuit |
 
-**IN1 is active low with an external pull-up**, so a failed or unpowered
-optocoupler reads as *asserted*: a welded-contactor condition fails toward the
-alarm state rather than being silently missed. This is the safety-relevant
-input, and it is deliberately on clean pins.
+**Both inputs are active low with an external pull-up**, so a failed or unpowered
+optocoupler reads as *asserted*. A welded-contactor condition on IN1 therefore
+fails toward the alarm state rather than being silently missed, and IN2 inherits
+the same property should it ever take on a safety role.
 
-**IN2 is active high**, because PB2's BOOT1 pull-down makes a pulled-up input
-impossible there (see §5.3). That sense is fail-*danger* — a dead optocoupler
-reads "not asserted". Acceptable only because IN2 is RFU. **If IN2 ever takes on
-a safety role, it must be moved off PB2**, not re-polarised.
+Keeping that uniform sense is the reason IN2 is a split net (2 vias) rather than
+sitting on its geometric partner PB2 — see §2.2. A pulled-up input is impossible
+on BOOT1, which would have forced IN2 to active high and made it fail-*danger*.
+Two vias buy a consistent, fail-safe convention across both inputs.
 
 ---
 
@@ -197,7 +208,7 @@ debug over USB-Serial-JTAG.
 |---|---|---|
 | PA15 / PB3 / PB4 | JTAG (JTDI / JTDO / NJTRST) with reset pull-ups | harmless with SWD-only debug; PA15's pull-up usefully holds NSS deasserted before firmware runs |
 | PA12 | USB D+, 1.5 k pull-up on the BlackPill | fine for a push-pull CS, which also wants to idle high |
-| PB2 | BOOT1, has a board pull-down | carries **OPTO_IN2**, wired **active high** so the pull-down is the resting state (input reads 0, BOOT1 = 0 at reset — correct for normal boot). Never put a pulled-**up** net here: an external pull-up would fight the ~10 k pull-down, land the pin at an indeterminate ~1.65 V, and break DFU entry. This rules out chip selects and active-low optocoupled inputs. |
+| PB2 | BOOT1, has a board pull-down | **left NC — do not use.** An external pull-up would fight the ~10 k pull-down, land the pin near 1.65 V and break DFU entry, which rules out chip selects, active-low optocoupled inputs and anything that must idle high. Only an active-high, pull-down-friendly output would be safe, and nothing here qualifies. Its C6 partner D19 is still used (IN2), via a split net. |
 
 ### 5.4 Failsafe
 
@@ -223,11 +234,15 @@ until a human intervenes. Both `RST` pins are deliberately NC.
 | − D9, D18 — dead pairs (BlackPill partner is 3V3 / RST) | −2 |
 | − D2, D3 — partners PA2/PA3 carry the UART | −2 |
 | − D8 — reserved NC for the onboard RGB LED (§6.1) | −1 |
-| **General shared pairs available** | **14** |
+| **General C6 pins available for shared nets** | **14** |
 | Allocated | **14** |
 | **Free** | **0** |
 
 Plus the UART pair (C6 TX/RX ↔ PA2/PA3), giving **16 shared nets** in total.
+
+Thirteen of those are true geometric pairs (one 3.81 mm stub each). **OPTO_IN2 is
+the exception** — a split net costing 2 vias, deliberately, to keep PB2/BOOT1
+unconnected.
 
 **The ESP32-C6 is the binding constraint on the entire board.** Every remaining
 position is either used, a dead pair, or a USB pin. There is no spare shared
