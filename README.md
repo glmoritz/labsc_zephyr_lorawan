@@ -55,6 +55,11 @@ then applies the patches in `patches/` (see *Known workarounds* below).
 
 ## Carrier pin map (one board, either MCU)
 
+> **[`PINMAP.md`](PINMAP.md) is authoritative** — it carries the complete
+> position-by-position table, the 12 V field I/O, the strap rules and the board
+> placement offsets. The summary below is kept for orientation only; if the two
+> disagree, `PINMAP.md` wins.
+
 The target hardware is a **dual-socket carrier**: it accepts *either* an ESP32-C6
 mini *or* a WeAct BlackPill F411CE, in overlapped 2.54 mm socket rows, so both
 firmware targets drive the same wiring. The pin assignment below is a **routing
