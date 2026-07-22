@@ -112,11 +112,11 @@ power at the bottom (b17–b19), right-hand power at the top (b0–b2).
 | 5 | 12.70 | PB1 | GND | *dead pair* | |
 | 6 | 15.24 | PB0 | D2 | **TC2_CS** | MAX6675 #2, `cs-gpios` reg 2 |
 | 7 | 17.78 | PA7 | D3 | **OPTO_IN1** | contactor dry contact |
-| 8 | 20.32 | PA6 | TX (GPIO16) | *spare* | ⚠ ROM drives GPIO16 as UART TX at boot — **output-only**, never an opto input |
-| 9 | 22.86 | PA5 | RX (GPIO17) | **OPTO_IN2** | RFU; GPIO17 is ROM RX, an input at boot — safe |
+| 8 | 20.32 | PA6 → *D22* | TX (GPIO16) ← *PA2* | **split row** | BP end = *spare*; C6 end = **UART_TX** (module pad 27) |
+| 9 | 22.86 | PA5 → *D23* | RX (GPIO17) ← *PA3* | **split row** | BP end = **OPTO_IN2**; C6 end = **UART_RX** (module pad 26) |
 | 10 | 25.40 | PA4 | D15 | **OPTO_OUT2** | RFU output, active-low sink — see §5.2 |
-| 11 | 27.94 | PA3 | D23 | **UART_RX** | USART2 |
-| 12 | 30.48 | PA2 | D22 | **UART_TX** | USART2 (console) |
+| 11 | 27.94 | PA3 → *GPIO17* | D23 ← *PA5* | **split row** | BP end = **UART_RX**; C6 end = **OPTO_IN2** |
+| 12 | 30.48 | PA2 → *GPIO16* | D22 ← *PA6* | **split row** | BP end = **UART_TX**; C6 end = *spare* |
 | 13 | 33.02 | PA1 | D21 | **KEEPALIVE_555** | software-toggled pulse |
 | 14 | 35.56 | PA0 | D20 | **HW_WDT_KICK** | software-toggled pulse |
 | 15 | 38.10 | RES | D19 | *dead pair* | BlackPill NRST; no global reset net |
@@ -125,10 +125,35 @@ power at the bottom (b17–b19), right-hand power at the top (b0–b2).
 | 18 | 45.72 | PC13 | GND | *dead pair* | PC13 = BlackPill onboard LED |
 | 19 | 48.26 | VBat | 5V | *dead pair* | ⚠ **do not connect** — VBat is a ≤3.6 V backup input |
 
-**The UART is now two straight stubs.** USART2 is fixed to PA2/PA3, which land at
-b12/b11 opposite D22/D23 — both clean C6 GPIOs. Zephyr's `uart0` is matrix-routable,
-so it is simply assigned there. No diagonals, no vias, and **every shared net on
-this board is now a plain 3.81 mm pair.**
+### The UART sits on the C6's bootloader pair (rows b8–b12 are split)
+
+The C6 console is **not** remapped: it stays on the board-default / ROM pair
+**TX = GPIO16 (module pad 27), RX = GPIO17 (pad 26)**, so the serial-download
+bootloader log and the Zephyr console come out of the same two carrier pads and
+one FTDI hookup covers both. That was an explicit trade: an earlier revision
+moved Zephyr's `uart0` to GPIO22/23 to buy two straight stubs, at the cost of the
+bootloader talking on different pads than the application.
+
+The BlackPill end cannot follow — USART2 is fixed to PA2/PA3 (b12/b11), and no
+other USART maps onto PA5/PA6. So four rows in this block are **split**: the
+BlackPill pad and the C6 pad at the same `b` belong to *different* nets.
+
+| Net | BlackPill pad | C6 pad | Δy |
+|---|---|---|---|
+| UART_TX | PA2 (b12) | GPIO16 (b8) | 10.16 mm |
+| UART_RX | PA3 (b11) | GPIO17 (b9) | 5.08 mm |
+| OPTO_IN2 | PA5 (b9) | D23 (b11) | 5.08 mm |
+| spare | PA6 (b8) | D22 (b12) | 10.16 mm |
+
+The two UART runs nest and do not cross each other; OPTO_IN2 and the spare are
+the mirror pair and cross them. **All four pads at each end are through-hole, so
+a run can drop to the bottom layer at the pad itself — these cost layer changes,
+not vias.** The spare carries no net until it is used, so in practice only three
+runs share the channel. Every other shared net on the board is still a plain
+3.81 mm stub.
+
+Side benefit: the spare is no longer output-only. It used to be PA6 ↔ GPIO16,
+which the ROM drives as TX at every boot; it is now PA6 ↔ D22, both clean pins.
 
 ⚠ Two adjacent-pad pairs must **never** be connected: b19-right (`VBat` ↔ C6 `5V`)
 and b19-left (`3V3` ↔ C6 `5V`). Both are a 3.81 mm gap between incompatible rails.
@@ -175,7 +200,7 @@ optocoupler transistor) and **dry-contact inputs**.
 | OUT1 | out | D20 | PA0 | pulse | hardware watchdog kick → cuts mains to oven |
 | OUT2 | out | D15 | PA4 | **active low** | RFU |
 | IN1 | in | D3 | PA7 | **active low** | contactor dry contact — responding / welded detection |
-| IN2 | in | RX (GPIO17) | PA5 | **active low** | RFU |
+| IN2 | in | D23 | PA5 | **active low** | RFU |
 
 Plus, on the logic side and **not** a field terminal:
 
@@ -188,11 +213,10 @@ optocoupler reads as *asserted*. A welded-contactor condition on IN1 therefore
 fails toward the alarm state rather than being silently missed, and IN2 inherits
 the same property should it ever take on a safety role.
 
-Both inputs are plain geometric pairs on clean pins — no split nets, no vias.
-IN2 sits on GPIO17 (the C6's ROM UART RX), which is an *input* during boot and so
-takes the external pull-up harmlessly. **Do not move it to GPIO16**: the ROM
-drives that pin as UART TX at every boot, and a phototransistor there would
-contend with it.
+Both inputs are on clean, non-strapping pins. IN1 is a plain 3.81 mm pair; IN2 is
+one of the four split rows in §2.2 (PA5 at b9, D23 at b11) because the C6 console
+occupies GPIO16/17. **Neither input may ever be placed on GPIO16**: the ROM drives
+it as UART TX at every boot and would contend with the phototransistor.
 
 ---
 
@@ -264,12 +288,16 @@ until a human intervenes. Both `RST` pins are deliberately NC.
 | − D8 — reserved NC for the onboard RGB LED (§6.1) | −1 |
 | − D9, D18, D19 — dead pairs (partner is PC14 / PC15 / NRST) | −3 |
 | **General C6 pins available for shared nets** | **15** |
-| Allocated | **15** |
-| **Free** | **0** |
+| Allocated | **14** |
+| **Free** | **1** — D22 |
 
-**Every shared net is a true geometric pair** — one 3.81 mm stub each, no split
-nets, no diagonals, no vias. The one spare left is b8-right (PA6 ↔ GPIO16), and it
-is **output-only**: the C6 ROM drives GPIO16 as UART TX at every boot.
+GPIO16/17 are not in that count: they are the ROM UART pair and carry the console
+on both sockets.
+
+**Every shared net except the four in §2.2 is a true geometric pair** — one
+3.81 mm stub, no diagonal, no layer change. The one spare left is **PA6 (b8-right)
+↔ D22 (b12-right)**, and unlike the previous revision's spare it is *not*
+output-only — both ends are clean pins.
 
 **The ESP32-C6 is the binding constraint on the entire board.** Every remaining
 position is either used, a dead pair, or a USB pin. There is no spare shared
@@ -385,8 +413,9 @@ Devicetree nodes and aliases now exposed:
 | `tc0` / `tc1` | GPIO4 / GPIO2 | PA12 / PB0 |
 | `keepalive-out` / `hw-wdt-out` | GPIO21 / GPIO20 | PA1 / PA0 |
 | `opto-out2` | GPIO15 | PA4 |
-| `opto-in1` / `opto-in2` | GPIO3 / GPIO17 | PA7 / PA5 |
+| `opto-in1` / `opto-in2` | GPIO3 / GPIO23 | PA7 / PA5 |
 | `led0`…`led3` | *(onboard RGB — not a carrier net)* | PB12…PB15 |
+| console | `uart0`, GPIO16/17 (board default) | `usart2`, PA2/PA3 |
 
 `opto_inputs` uses the `gpio-keys` binding purely so devicetree validates; no
 input driver is enabled. Read the pins with `GPIO_DT_SPEC_GET(DT_ALIAS(opto_in1),

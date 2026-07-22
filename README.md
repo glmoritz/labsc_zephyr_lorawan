@@ -83,10 +83,10 @@ in Y. Consequences:
 - A shared net becomes **one straight 3.81 mm stub** between two adjacent pads.
 - Only the outer (C6) pad ever needs to escape, and it escapes **outward into
   open board** — no track ever threads between pads.
-- The middle **15.24 mm channel is completely free** for power and the two UART
-  crossings.
-- The Y offset is not arbitrary: it is the only one that lands `GND↔GND` and
-  `5V↔5V` as direct adjacent pairs.
+- The middle **15.24 mm channel is completely free** for power.
+- The Y offset is the only one that lands SPI1's `PB3/PB4/PB5` and USART2's
+  `PA2/PA3` on clean C6 GPIOs at once (swept exhaustively in `PINMAP.md` §1).
+  There is **no** free power adjacency — power is routed deliberately.
 
 ### Assignment
 
@@ -101,21 +101,23 @@ in Y. Consequences:
 | 11 | PB4 | D7 | SPI MISO |
 | 12 | PB5 | D0 | SPI MOSI |
 | 13 | PB6 | D1 | LR1121 NRESET |
-| 14 | PB7 | D8 | MAX6675 #2 CS (`cs-gpios` reg 2, node `tc1`) |
+| 14 | PB7 | D8 | **reserved, leave NC** (keeps the C6 RGB LED usable) |
 | 15 | PB8 | D10 | LR1121 BUSY |
 | 16 | PB9 | D11 | LR1121 DIO9 (IRQ, pull-down) |
-| **RIGHT rows — UART + power control** ||||
-| 6 | PA2 | *(→ D-TX)* | UART TX (console) |
-| 7 | PA3 | *(→ D-RX)* | UART RX |
-| 8 | — | TX (GPIO16) | UART TX, C6 end |
-| 9 | — | RX (GPIO17) | UART RX, C6 end |
-| 11 | PA7 | D23 | spare |
-| 12 | PB0 | D22 | spare |
-| 13 | PB1 | D21 | 555 keep-alive (alias `keepalive-out`) |
-| 14 | PB10 | D20 | HW watchdog kick (alias `hw-wdt-out`) |
-| 15 | PB2 | D19 | spare (PB2 = BOOT1 — kept off safety nets) |
-| 18 | GND | GND | direct adjacency |
-| 19 | 5V | 5V | direct adjacency |
+| **RIGHT rows — field I/O, UART, power control** ||||
+| 6 | PB0 | D2 | MAX6675 #2 CS (`cs-gpios` reg 2, node `tc1`) |
+| 7 | PA7 | D3 | OPTO_IN1 — contactor dry contact (active low) |
+| 8 | PA6 | *(→ D22)* | spare, BlackPill end |
+| 8 | — | TX (GPIO16) | UART TX, C6 end (module pad 27) |
+| 9 | PA5 | *(→ D23)* | OPTO_IN2 (RFU, active low), BlackPill end |
+| 9 | — | RX (GPIO17) | UART RX, C6 end (module pad 26) |
+| 10 | PA4 | D15 | OPTO_OUT2 (RFU, active-low sink) |
+| 11 | PA3 | D23 | UART RX (BP end) / OPTO_IN2 (C6 end) |
+| 12 | PA2 | D22 | UART TX (BP end) / spare (C6 end) |
+| 13 | PA1 | D21 | 555 keep-alive (alias `keepalive-out`) |
+| 14 | PA0 | D20 | HW watchdog kick (alias `hw-wdt-out`) |
+| **LEDs — BlackPill only** ||||
+| 0–3 | PB12–PB15 | — | status LEDs 1–4 (`led0`…`led3`) |
 
 LR1121 DIO7/DIO8 are broken out on the Core1121 header and unused.
 
@@ -149,10 +151,11 @@ whose C6 neighbour is a power or reset pin. Those are all left **unconnected by
 rule** — wiring anything there would create a function the C6 could not perform.
 
 The C6 is the binding constraint on the whole board: 21 GPIO-ish pins, minus
-D12/D13 (native USB), D15, D9 and D18 (dead pairs), and D2/D3 (their BlackPill
-partners carry the UART) = **14 usable + TX/RX**, of which 11 + UART are used.
-**3 shared spares remain.** The BlackPill's ~16 surplus pins are simply dead
-weight. Both `RST` pins stay NC — there is no global reset net.
+D12/D13 (native USB), D9/D18/D19 (dead pairs) and D8 (reserved for the onboard
+RGB LED). Nearly all the rest are used; **one shared spare remains** — BlackPill
+`PA6` (b8-right) to C6 `D22` (b12-right). The BlackPill's ~16 surplus pins are
+dead weight apart from the four LED pins. Both `RST` pins stay NC — there is no
+global reset net.
 
 Convenient side effect: rows b0–b4 carry no routing, and that is exactly where
 both modules' USB-C connectors point. Keep that end free of tall parts and both
@@ -167,7 +170,7 @@ no MOSI) and tri-state SO when deselected, so they coexist with the LR1121; Zeph
 sets clock/mode per device (LR1121 @ 16 MHz, MAX6675 @ 4 MHz). Read them via the
 `maxim,max6675` sensor driver (`CONFIG_MAX6675`), nodes aliased `tc0` / `tc1`.
 
-**Failsafe pulse outputs (D21, D22).** These MUST be toggled from software — never
+**Failsafe pulse outputs (D21, D20).** These MUST be toggled from software — never
 hardware PWM/LEDC. LEDC keeps running through a CPU hang, which would keep the 555
 retriggered and the external watchdog fed, defeating the whole failsafe. Gate the
 toggling on an application-liveness flag (a bare `k_timer` keeps firing even if the

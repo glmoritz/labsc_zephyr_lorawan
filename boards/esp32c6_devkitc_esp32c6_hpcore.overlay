@@ -103,9 +103,9 @@
 	 * optocoupler reads as asserted, so a welded contactor fails toward the alarm
 	 * state rather than being missed.
 	 *
-	 * IN2 is on GPIO17 (the ROM UART RX), an input during boot, so it takes the
-	 * pull-up harmlessly. Do NOT move it to GPIO16 - the ROM drives that pin as
-	 * UART TX at every boot and would contend with the phototransistor.
+	 * IN2 is on GPIO23, a clean GPIO. It moved off GPIO17 when the console went
+	 * back to the ROM UART pair (GPIO16/17); its BlackPill end stays PA5, so the
+	 * net is now a diagonal (b9-right -> b11-right) instead of a stub.
 	 */
 	opto_inputs {
 		compatible = "gpio-keys";
@@ -115,7 +115,7 @@
 			zephyr,code = <INPUT_KEY_0>;
 		};
 		opto_in2: in2 {
-			gpios = <&gpio0 17 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* GPIO17, b9-right (PA5) */
+			gpios = <&gpio0 23 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* D23, b11-right pad -> PA5 */
 			label = "isolated 12V input 2 (RFU)";
 			zephyr,code = <INPUT_KEY_1>;
 		};
@@ -140,29 +140,19 @@
 			output-low;
 		};
 	};
-
-	uart0_carrier: uart0_carrier {
-		group1 {
-			pinmux = <UART0_TX_GPIO22>;
-			output-high;
-		};
-		group2 {
-			pinmux = <UART0_RX_GPIO23>;
-			bias-pull-up;
-		};
-	};
 };
 
 /*
- * Console / shared UART moves to the carrier pair: TX=GPIO22, RX=GPIO23, facing
- * BlackPill PA2/PA3 (USART2) at rows b12/b11. The ROM bootloader console stays
- * on GPIO16/17 regardless - only Zephyr's uart0 is remapped - so serial-download
- * recovery is unaffected, but GPIO16 must stay output-only on the carrier.
+ * uart0 is deliberately NOT remapped: it keeps the board default TX=GPIO16 /
+ * RX=GPIO17, which is also where the ROM serial-download console lives. The
+ * bootloader log and the Zephyr console therefore come out of the same two
+ * carrier pads (module pads 27/26) and one FTDI hookup covers both.
+ *
+ * The BlackPill end of that net is USART2 (PA2/PA3, rows b12/b11), which cannot
+ * move - so the UART is two diagonals in the channel rather than two stubs. Both
+ * ends are through-hole, so they can drop to the bottom layer at the pad with no
+ * vias.
  */
-&uart0 {
-	pinctrl-0 = <&uart0_carrier>;
-	pinctrl-names = "default";
-};
 
 /* i2c0 shares GPIO6/GPIO7 with spi2; disable it so the LoRa SPI bus owns them. */
 &i2c0 {
