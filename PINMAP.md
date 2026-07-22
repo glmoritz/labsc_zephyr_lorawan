@@ -33,8 +33,36 @@ Consequences:
 - A shared net is **one straight 3.81 mm stub** between two adjacent pads.
 - Only the outer (C6) pad ever escapes, and it escapes **outward into open
   board** — no track threads between pads.
-- The Y offset is not arbitrary: it is the only one that lands `GND↔GND` and
-  `5V↔5V` as direct adjacent pairs (rows b18 / b19).
+- The Y offset (5 pitches) is chosen so the **left column** works out: SPI1's
+  PB3/PB4/PB5 land on three clean C6 GPIOs, PB8/PB9 get usable partners, and the
+  C6's unusable D12/D13 (native USB) fall harmlessly onto the BlackPill's power
+  pins. **There is no free power adjacency** — the C6 runs GND-top / 5V-bottom on
+  both rows while the BlackPill has right-side power at the *top* and left-side at
+  the *bottom*, so they cannot align. Power is routed deliberately (§7).
+
+### Why the Y offset is 5 pitches
+
+Swept exhaustively against the corrected BlackPill order, not assumed. Hard
+constraints: SPI1's PB3/PB4/PB5 must all land on clean C6 GPIOs, USART2's
+PA2/PA3 likewise, and D8 stays reserved (§6.1).
+
+| k | usable pairs | SPI1 trio | USART2 | |
+|---|---|---|---|---|
+| 0 | 16 | PB3→D10 PB4→D11 | PA3→D18 | **broken** |
+| 1 | 17 | PB4→D10 PB5→D11 | PA3→D19 PA2→D18 | **broken** |
+| 2 | 18 | PB3→D1 PB5→D10 | PA3→D20 PA2→D19 | **broken** |
+| 3 | 18 | PB3→D0 PB4→D1 | PA3→D21 PA2→D20 | **broken** |
+| 4 | **18** | PB3→D7 PB4→D0 PB5→D1 | PA3→D22 PA2→D21 | viable |
+| **5** | 17 | PB3→D6 PB4→D7 PB5→D0 | PA3→D23 PA2→D22 | **chosen** |
+
+k = 0–3 split the SPI trio across dead pairs and are unusable at any price.
+
+k = 4 yields one more pair, but its left column is exactly 8 slots for 8 nets and
+the topmost is **PA11 — the BlackPill's USB D−**. Taking it means two signals on
+the USB data lines of a board that gets USB plugged in routinely for debug and
+power, and it also costs PB9. k = 5 needs only PA12 (USB D+), which is
+unavoidable either way, and keeps PB9 usable. One spare pair is not worth the
+second USB pin.
 
 `b` = socket row index counted from the BlackPill's USB-C end, `y = 2.54·b`.
 
@@ -69,43 +97,41 @@ Consequences:
 
 ### 2.2 Right rows — UART, field I/O, power
 
+Derived from `Kicad-STM32/Symbols/YAAJ_WeAct_BlackPill_Part_Like.kicad_sym`
+paired with the `YAAJ_WeAct_BlackPill_2` footprint — **not** from a remembered
+pinout. On this board the two power triplets sit at **opposite ends**: left-hand
+power at the bottom (b17–b19), right-hand power at the top (b0–b2).
+
 | b | y (mm) | BlackPill | ESP32-C6 | Net | Notes |
 |---|---|---|---|---|---|
-| 0 | 0.00 | VB | — | *NC* | no C6 neighbour |
-| 1 | 2.54 | PC13 | — | *NC* | BlackPill onboard LED; weak RTC pin, left alone |
-| 2 | 5.08 | PC14 | — | *NC* | |
-| 3 | 7.62 | PC15 | — | *NC* | |
-| 4 | 10.16 | PA0 | — | *NC* | |
-| 5 | 12.70 | PA1 | GND | *dead pair* | |
-| 6 | 15.24 | PA2 | D2 | **UART_TX** | STM32 end (USART2) |
-| 7 | 17.78 | PA3 | D3 | **UART_RX** | STM32 end (USART2) |
-| 8 | 20.32 | PA4 | TX (GPIO16) | **OPTO_IN2** ‖ **UART_TX** | ⚠ **split row** — PA4 carries IN2, C6 TX carries UART_TX. The two pads are **not** connected. |
-| 9 | 22.86 | PA5 | RX (GPIO17) | — ‖ **UART_RX** | PA5 unused; spare BlackPill pin |
-| 10 | 25.40 | PA6 | D15 | **OPTO_OUT2** | RFU output — see §5.2 |
-| 11 | 27.94 | PA7 | D23 | **OPTO_IN1** | contactor dry contact |
-| 12 | 30.48 | PB0 | D22 | **TC2_CS** | MAX6675 #2, `cs-gpios` reg 2 |
-| 13 | 33.02 | PB1 | D21 | **KEEPALIVE_555** | software-toggled pulse |
-| 14 | 35.56 | PB10 | D20 | **HW_WDT_KICK** | software-toggled pulse |
-| 15 | 38.10 | PB2 | D19 | — ‖ **OPTO_IN2** | ⚠ **split row** — **PB2 left NC** (BOOT1, see §5.3); D19 is IN2's C6 end |
-| 16 | 40.64 | RST | D18 | *dead pair* | no global reset net |
-| 17 | 43.18 | 3V3 | D9 | *dead pair* | D9 strapping, leave NC |
-| 18 | 45.72 | GND | GND | **GND** | direct adjacency ✓ |
-| 19 | 48.26 | 5V | 5V | **5V** | direct adjacency ✓ |
+| 0 | 0.00 | 5V | — | *BP-only* | right-hand power group is at the **top** |
+| 1 | 2.54 | GND | — | *BP-only* | |
+| 2 | 5.08 | 3V3 | — | *BP-only* | |
+| 3 | 7.62 | PB10 | — | *NC* | BlackPill-only spare |
+| 4 | 10.16 | PB2 | — | *NC* | BOOT1 — outside the C6 span, so naturally unused |
+| 5 | 12.70 | PB1 | GND | *dead pair* | |
+| 6 | 15.24 | PB0 | D2 | **TC2_CS** | MAX6675 #2, `cs-gpios` reg 2 |
+| 7 | 17.78 | PA7 | D3 | **OPTO_IN1** | contactor dry contact |
+| 8 | 20.32 | PA6 | TX (GPIO16) | *spare* | ⚠ ROM drives GPIO16 as UART TX at boot — **output-only**, never an opto input |
+| 9 | 22.86 | PA5 | RX (GPIO17) | **OPTO_IN2** | RFU; GPIO17 is ROM RX, an input at boot — safe |
+| 10 | 25.40 | PA4 | D15 | **OPTO_OUT2** | RFU output, active-low sink — see §5.2 |
+| 11 | 27.94 | PA3 | D23 | **UART_RX** | USART2 |
+| 12 | 30.48 | PA2 | D22 | **UART_TX** | USART2 (console) |
+| 13 | 33.02 | PA1 | D21 | **KEEPALIVE_555** | software-toggled pulse |
+| 14 | 35.56 | PA0 | D20 | **HW_WDT_KICK** | software-toggled pulse |
+| 15 | 38.10 | RES | D19 | *dead pair* | BlackPill NRST; no global reset net |
+| 16 | 40.64 | PC15 | D18 | *dead pair* | **LSE crystal** — PC14/PC15 are populated |
+| 17 | 43.18 | PC14 | D9 | *dead pair* | **LSE crystal**, and D9 is strapping |
+| 18 | 45.72 | PC13 | GND | *dead pair* | PC13 = BlackPill onboard LED |
+| 19 | 48.26 | VBat | 5V | *dead pair* | ⚠ **do not connect** — VBat is a ≤3.6 V backup input |
 
-UART occupies four positions but carries two nets: USART2 is fixed to PA2/PA3
-while the C6's ROM console is fixed to GPIO16/17. Both shift by +2 in the same
-direction, so they are **two parallel diagonals — no crossing, no via.**
+**The UART is now two straight stubs.** USART2 is fixed to PA2/PA3, which land at
+b12/b11 opposite D22/D23 — both clean C6 GPIOs. Zephyr's `uart0` is matrix-routable,
+so it is simply assigned there. No diagonals, no vias, and **every shared net on
+this board is now a plain 3.81 mm pair.**
 
-**OPTO_IN2 is the one net that is not a geometric pair.** Its C6 end is D19 at
-row b15; its BlackPill end is **PA4 at row b8**, joined by a short bottom-layer
-diagonal — **2 vias.** PA4 is free precisely because the UART's STM32 end is
-PA2/PA3, so nothing else wanted it.
-
-This exists to keep **PB2 unconnected**. PB2 is BOOT1: it has a board pull-down,
-so it can host neither a pulled-up net (the pull-up would fight it, land the pin
-near 1.65 V and break DFU entry) nor anything that must idle high. Leaving it NC
-is worth two vias — and it lets IN2 keep the **fail-safe active-low sense**, so
-*both* optocoupled inputs now fail toward the alarm state.
+⚠ Two adjacent-pad pairs must **never** be connected: b19-right (`VBat` ↔ C6 `5V`)
+and b19-left (`3V3` ↔ C6 `5V`). Both are a 3.81 mm gap between incompatible rails.
 
 ---
 
@@ -120,7 +146,7 @@ device.
 |---|---|---|---|---|---|
 | 0 | LR1121 (Core1121-XF) | D5 | PA15 | 16 MHz | `lora_lr1121` |
 | 1 | MAX6675 #1 — hot zone | D4 | PA12 | 4 MHz | `tc0` |
-| 2 | MAX6675 #2 — cold zone | D22 | PB0 | 4 MHz | `tc1` |
+| 2 | MAX6675 #2 — cold zone | D2 | PB0 | 4 MHz | `tc1` |
 
 **Neither thermocouple sits on a strapping pin.** TC2_CS was moved off D8 (see
 §6.1): a safety-relevant temperature reading has no business on the most
@@ -134,7 +160,8 @@ MAX6675 modules use right-angle 1×5 headers, pin order **`GND, VCC, SCK, CS, SO
 Put **both headers on the top edge** — #1 toward the left, #2 toward the centre —
 and run SCK + MISO as a short bus along that edge, tapping each header off it.
 Rows b0–b4 carry no routing, so TC1_CS reaches #1 up the left side and TC2_CS
-reaches #2 straight up through that dead zone. **No crossings, no vias.**
+reaches #2 straight up through that dead zone — TC2_CS is at b6, the topmost
+usable right-hand row, precisely so that run is short. **No crossings, no vias.**
 
 ---
 
@@ -145,26 +172,27 @@ optocoupler transistor) and **dry-contact inputs**.
 
 | Channel | Dir | C6 | STM32 | Sense | Purpose |
 |---|---|---|---|---|---|
-| OUT1 | out | D20 | PB10 | pulse | hardware watchdog kick → cuts mains to oven |
-| OUT2 | out | D15 | PA6 | **active low** | RFU |
-| IN1 | in | D23 | PA7 | **active low** | contactor dry contact — responding / welded detection |
-| IN2 | in | D19 | **PA4** | **active low** | RFU — split net, not a geometric pair (2 vias) |
+| OUT1 | out | D20 | PA0 | pulse | hardware watchdog kick → cuts mains to oven |
+| OUT2 | out | D15 | PA4 | **active low** | RFU |
+| IN1 | in | D3 | PA7 | **active low** | contactor dry contact — responding / welded detection |
+| IN2 | in | RX (GPIO17) | PA5 | **active low** | RFU |
 
 Plus, on the logic side and **not** a field terminal:
 
 | Net | C6 | STM32 | Purpose |
 |---|---|---|---|
-| KEEPALIVE_555 | D21 | PB1 | retriggers the 555 monostable gating the power circuit |
+| KEEPALIVE_555 | D21 | PA1 | retriggers the 555 monostable gating the power circuit |
 
 **Both inputs are active low with an external pull-up**, so a failed or unpowered
 optocoupler reads as *asserted*. A welded-contactor condition on IN1 therefore
 fails toward the alarm state rather than being silently missed, and IN2 inherits
 the same property should it ever take on a safety role.
 
-Keeping that uniform sense is the reason IN2 is a split net (2 vias) rather than
-sitting on its geometric partner PB2 — see §2.2. A pulled-up input is impossible
-on BOOT1, which would have forced IN2 to active high and made it fail-*danger*.
-Two vias buy a consistent, fail-safe convention across both inputs.
+Both inputs are plain geometric pairs on clean pins — no split nets, no vias.
+IN2 sits on GPIO17 (the C6's ROM UART RX), which is an *input* during boot and so
+takes the external pull-up harmlessly. **Do not move it to GPIO16**: the ROM
+drives that pin as UART TX at every boot, and a phototransistor there would
+contend with it.
 
 ---
 
@@ -208,7 +236,9 @@ debug over USB-Serial-JTAG.
 |---|---|---|
 | PA15 / PB3 / PB4 | JTAG (JTDI / JTDO / NJTRST) with reset pull-ups | harmless with SWD-only debug; PA15's pull-up usefully holds NSS deasserted before firmware runs |
 | PA12 | USB D+, 1.5 k pull-up on the BlackPill | fine for a push-pull CS, which also wants to idle high |
-| PB2 | BOOT1, has a board pull-down | **left NC — do not use.** An external pull-up would fight the ~10 k pull-down, land the pin near 1.65 V and break DFU entry, which rules out chip selects, active-low optocoupled inputs and anything that must idle high. Only an active-high, pull-down-friendly output would be safe, and nothing here qualifies. Its C6 partner D19 is still used (IN2), via a split net. |
+| PB2 | BOOT1, has a board pull-down | **Not reachable** — it sits at b4-right, outside the C6's span, so it is unused by construction. Do not route to it: an external pull-up would fight the ~10 k pull-down and break DFU entry. |
+| PC13 / PC14 / PC15 | PC13 = onboard LED (weak RTC pin); **PC14/PC15 carry the 32.768 kHz LSE crystal, which is populated on this board** | all three unusable; b16–b18 right are dead pairs |
+| VBat | ≤3.6 V RTC backup input | b19-right, sits 3.81 mm from the C6's 5V pad. ⚠ **never connect** |
 
 ### 5.4 Failsafe
 
@@ -231,18 +261,15 @@ until a human intervenes. Both `RST` pins are deliberately NC.
 |---|---|
 | C6 module GPIO pins (D0–D13, D15, D18–D23) | 21 |
 | − D12 / D13 — native USB (USB-Serial-JTAG) | −2 |
-| − D9, D18 — dead pairs (BlackPill partner is 3V3 / RST) | −2 |
-| − D2, D3 — partners PA2/PA3 carry the UART | −2 |
 | − D8 — reserved NC for the onboard RGB LED (§6.1) | −1 |
-| **General C6 pins available for shared nets** | **14** |
-| Allocated | **14** |
+| − D9, D18, D19 — dead pairs (partner is PC14 / PC15 / NRST) | −3 |
+| **General C6 pins available for shared nets** | **15** |
+| Allocated | **15** |
 | **Free** | **0** |
 
-Plus the UART pair (C6 TX/RX ↔ PA2/PA3), giving **16 shared nets** in total.
-
-Thirteen of those are true geometric pairs (one 3.81 mm stub each). **OPTO_IN2 is
-the exception** — a split net costing 2 vias, deliberately, to keep PB2/BOOT1
-unconnected.
+**Every shared net is a true geometric pair** — one 3.81 mm stub each, no split
+nets, no diagonals, no vias. The one spare left is b8-right (PA6 ↔ GPIO16), and it
+is **output-only**: the C6 ROM drives GPIO16 as UART TX at every boot.
 
 **The ESP32-C6 is the binding constraint on the entire board.** Every remaining
 position is either used, a dead pair, or a USB pin. There is no spare shared
@@ -319,9 +346,14 @@ Isolated 12 V → +5 V → the module's `5V` pin → the module's on-board regul
 supplies 3V3 to the logic domain. A jumper opens the DC-DC path for USB-powered
 debugging.
 
-- **Leave the C6's left-hand 5V pad (b19-left) unconnected.** It is internally
-  bonded to the right-hand one, and skipping it removes the only dangerous
-  adjacency on the board (C6 5V sitting 3.81 mm from BlackPill 3V3).
+- **Both C6 5V pads (b19, left and right) sit next to incompatible rails** —
+  BlackPill 3V3 on the left, VBat on the right. They are internally bonded on the
+  module, so connect the 5V net at neither: bring 5V in on the **BlackPill's own
+  5V pin at b17-left** and reach the C6 via a bottom-layer run. ⚠ Never bridge
+  either b19 pair.
+- The BlackPill's power appears twice (5V/GND/3V3 at b17–b19 **left** and again at
+  b0–b2 **right**); the pins are common on the module, so wire one group and let
+  the pour carry the rest.
 - ⚠ **Add a Schottky in the DC-DC's +5 V output.** Neither module has an input
   diode, so closing the jumper with USB plugged in backfeeds the USB host.
 - 3V3 is generated at different pins depending on which module is fitted
@@ -343,10 +375,12 @@ settled. Outstanding delta:
 
 | Item | Overlays have | This doc says |
 |---|---|---|
-| TC2_CS | `D8` / `PB7` | **`D22` / `PB0`** |
+| TC2_CS | `D8` / `PB7` | **`D2` / `PB0`** |
 | OPTO_OUT2, OPTO_IN1, OPTO_IN2 | absent | §4 |
 | LED1–4 (BlackPill only) | absent | §6.1 |
 | D8 (b14-left) | used by TC2_CS | **reserved NC** |
+| KEEPALIVE_555 | `D21` / `PB1` | `D21` / **`PA1`** |
+| HW_WDT_KICK | `D20` / `PB10` | `D20` / **`PA0`** |
 
 Both targets currently build clean, they simply describe the older map. Apply
 §2–§4 to `boards/*.overlay` and re-verify with a build of each target.
@@ -355,11 +389,12 @@ Both targets currently build clean, they simply describe the older map. Apply
 
 1. ⚠ **`symbols/YAAJ_BlackPill.kicad_sym` is a BluePill symbol**, not a
    BlackPill. It has `PB11` (absent on the F411CE LQFP48) and lacks `PB2`,
-   `PC14`, `PC15`, `VB`. Paired with the `YAAJ_WeAct_BlackPill_2` footprint it
-   will silently mis-map the entire right-hand header. Rebuild it with the U-shape
-   pad numbering: left column pads **1→20** top-to-bottom, right column pads
-   **40→21** top-to-bottom (pad 21 = 5V at bottom-right, pad 40 = VB at
-   top-right). Numbering the right column 21→40 mirrors every right-side pin.
+   `PC14`, `PC15`, `VBat`. Paired with the `YAAJ_WeAct_BlackPill_2` footprint it
+   will silently mis-map the entire right-hand header. **The replacement already
+   exists**: use `Kicad-STM32/Symbols/YAAJ_WeAct_BlackPill_Part_Like.kicad_sym`
+   (40 pins, correct F411CE pinout), which is verified consistent with the
+   footprint and with the physical board. Switch the schematic over to it and
+   retire the old symbol.
 2. ⚠ **`LoRaModuleRadioenge.kicad_mod` is parallel-numbered, not U-shaped** —
    pad 1 and pad 16 sit diagonally opposite. Pads 9–16 are unused so that half is
    harmless, but confirm the module's real pin 1 is at the end this footprint
