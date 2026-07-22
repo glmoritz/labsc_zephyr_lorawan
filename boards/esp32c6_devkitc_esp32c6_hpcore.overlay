@@ -14,12 +14,15 @@
  *
  * The pin choice is therefore a ROUTING result, not a preference. See README.md
  * ("Carrier pin map") for the derivation. Constraints honoured here:
- *   - GPIO12/13 are native USB (USB-Serial-JTAG)      -> never used
- *   - GPIO15 selects the JTAG source; must float high -> left unconnected
- *   - GPIO8/9 are strapping; GPIO8 carries a chip select only (idles high),
- *     never a device-driven input such as BUSY
+ *   - GPIO12/13 are native USB (USB-Serial-JTAG)   -> never used
+ *   - GPIO8 is strapping AND drives the module's onboard addressable RGB LED
+ *     -> left unrouted on the carrier, so the LED stays usable
+ *   - GPIO9 is strapping (boot mode)               -> dead pair, unused
+ *   - GPIO15 selects the JTAG source and is sampled at reset -> carries an
+ *     active-low OUTPUT only (OPTO_OUT2), never an input
  *   - GPIO4-7 are the pin-JTAG group, usable as GPIO only because GPIO15 stays
- *     high (we debug over USB-JTAG)
+ *     high at reset (we debug over USB-JTAG)
+ *   - GPIO16 is the ROM UART TX -> output-only on the carrier
  *   - the C6 GPIO matrix lets SPI2 land anywhere, so the STM32's fixed
  *     alternate-function pins are the anchor and the C6 bends to match
  *
@@ -31,6 +34,7 @@
 
 #include <zephyr/dt-bindings/usp/lr11xx.h>
 #include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 
 /* LoRaWAN credentials (DevEUI / JoinEUI / AppKey / region) live here. */
 #include "user_keys.overlay"
@@ -45,6 +49,9 @@
 		tc1 = &tc1;
 		keepalive-out = &keepalive_out;
 		hw-wdt-out = &hw_wdt_out;
+		opto-out2 = &opto_out2;
+		opto-in1 = &opto_in1;
+		opto-in2 = &opto_in2;
 	};
 
 	/*
@@ -64,12 +71,53 @@
 	failsafe_outputs {
 		compatible = "gpio-leds";
 		keepalive_out: keepalive {
-			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D21, carrier b13 (BlackPill PB1) */
+			gpios = <&gpio0 21 GPIO_ACTIVE_HIGH>;   /* D21, carrier b13-right (BlackPill PA1) */
 			label = "555 monostable keep-alive";
 		};
 		hw_wdt_out: hw-wdt {
-			gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;   /* D20, carrier b14 (BlackPill PB10) */
+			gpios = <&gpio0 20 GPIO_ACTIVE_HIGH>;   /* D20, carrier b14-right (BlackPill PA0) */
 			label = "external hardware watchdog kick";
+		};
+	};
+
+	/*
+	 * Isolated 12 V field I/O. Screw terminals are open-drain (optocoupler
+	 * transistor) outputs and dry-contact inputs. OUT1 is hw_wdt_out above.
+	 *
+	 * OUT2 sits on D15, which selects the ESP32-C6 JTAG source and is sampled at
+	 * reset. It is driven ACTIVE LOW into the opto (3V3 - R - LED - pin) with an
+	 * external 10k pull-up, so Hi-Z at reset = pin high = strap satisfied AND
+	 * output inactive. Never make D15 an input: a field contact pulling it low at
+	 * reset switches JTAG onto GPIO4-7, which would seize TC1_CS/NSS/SCK/MISO.
+	 */
+	opto_outputs {
+		compatible = "gpio-leds";
+		opto_out2: out2 {
+			gpios = <&gpio0 15 GPIO_ACTIVE_LOW>;    /* D15, carrier b10-right (BlackPill PA4) */
+			label = "isolated 12V output 2 (RFU)";
+		};
+	};
+
+	/*
+	 * Both inputs are ACTIVE LOW with external pull-ups: a failed or unpowered
+	 * optocoupler reads as asserted, so a welded contactor fails toward the alarm
+	 * state rather than being missed.
+	 *
+	 * IN2 is on GPIO17 (the ROM UART RX), an input during boot, so it takes the
+	 * pull-up harmlessly. Do NOT move it to GPIO16 - the ROM drives that pin as
+	 * UART TX at every boot and would contend with the phototransistor.
+	 */
+	opto_inputs {
+		compatible = "gpio-keys";
+		opto_in1: in1 {
+			gpios = <&gpio0 3 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;    /* D3,  b7-right (PA7) */
+			label = "contactor dry contact";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+		opto_in2: in2 {
+			gpios = <&gpio0 17 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* GPIO17, b9-right (PA5) */
+			label = "isolated 12V input 2 (RFU)";
+			zephyr,code = <INPUT_KEY_1>;
 		};
 	};
 };
@@ -92,6 +140,28 @@
 			output-low;
 		};
 	};
+
+	uart0_carrier: uart0_carrier {
+		group1 {
+			pinmux = <UART0_TX_GPIO22>;
+			output-high;
+		};
+		group2 {
+			pinmux = <UART0_RX_GPIO23>;
+			bias-pull-up;
+		};
+	};
+};
+
+/*
+ * Console / shared UART moves to the carrier pair: TX=GPIO22, RX=GPIO23, facing
+ * BlackPill PA2/PA3 (USART2) at rows b12/b11. The ROM bootloader console stays
+ * on GPIO16/17 regardless - only Zephyr's uart0 is remapped - so serial-download
+ * recovery is unaffected, but GPIO16 must stay output-only on the carrier.
+ */
+&uart0 {
+	pinctrl-0 = <&uart0_carrier>;
+	pinctrl-names = "default";
 };
 
 /* i2c0 shares GPIO6/GPIO7 with spi2; disable it so the LoRa SPI bus owns them. */
@@ -117,13 +187,13 @@
 
 	/*
 	 * One CS per device on the shared bus, indexed by each child's `reg`.
-	 * D8 is an ESP32-C6 strapping pin; it carries a chip select precisely
-	 * because a CS is a host-driven output that idles HIGH, which is what the
-	 * strap needs at boot. Never put a device-driven input (BUSY, MISO) there.
+	 * Neither thermocouple sits on a strapping pin. D8 is deliberately NOT used
+	 * here: it is left unrouted on the carrier so the module's onboard
+	 * addressable RGB LED stays usable (it needs exclusive ~800 kHz timing).
 	 */
-	cs-gpios = <&gpio0 5 GPIO_ACTIVE_LOW>,    /* reg 0: LR1121 NSS  (D5,  b9)  */
-		   <&gpio0 4 GPIO_ACTIVE_LOW>,    /* reg 1: MAX6675 #1  (D4,  b8)  */
-		   <&gpio0 8 GPIO_ACTIVE_LOW>;    /* reg 2: MAX6675 #2  (D8,  b14) */
+	cs-gpios = <&gpio0 5 GPIO_ACTIVE_LOW>,    /* reg 0: LR1121 NSS  (D5, b9-left)  */
+		   <&gpio0 4 GPIO_ACTIVE_LOW>,    /* reg 1: MAX6675 #1  (D4, b8-left)  */
+		   <&gpio0 2 GPIO_ACTIVE_LOW>;    /* reg 2: MAX6675 #2  (D2, b6-right) */
 
 	lora_lr1121: lora@0 {
 		compatible = "semtech,lr1121";

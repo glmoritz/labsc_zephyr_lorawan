@@ -368,22 +368,34 @@ drop to 8 MHz if it misbehaves (no impact at these data rates).
 
 ## 8. Open items
 
-### Firmware lags this document
+### Firmware is in sync
 
-The overlays were last re-pinned at commit `f712a69`, **before** §3 and §4 were
-settled. Outstanding delta:
+Both overlays implement §2–§4 as of this commit, verified against the generated
+devicetree (not just a successful link):
 
-| Item | Overlays have | This doc says |
+| Target | Build | Footprint |
 |---|---|---|
-| TC2_CS | `D8` / `PB7` | **`D2` / `PB0`** |
-| OPTO_OUT2, OPTO_IN1, OPTO_IN2 | absent | §4 |
-| LED1–4 (BlackPill only) | absent | §6.1 |
-| D8 (b14-left) | used by TC2_CS | **reserved NC** |
-| KEEPALIVE_555 | `D21` / `PB1` | `D21` / **`PA1`** |
-| HW_WDT_KICK | `D20` / `PB10` | `D20` / **`PA0`** |
+| `esp32c6_devkitc/esp32c6/hpcore` | clean | 426 KB flash / 106 KB SRAM |
+| `blackpill_f411ce` | clean | 219 KB flash / 38 KB SRAM (42 % / 29 %) |
 
-Both targets currently build clean, they simply describe the older map. Apply
-§2–§4 to `boards/*.overlay` and re-verify with a build of each target.
+Devicetree nodes and aliases now exposed:
+
+| Alias | C6 | BlackPill |
+|---|---|---|
+| `tc0` / `tc1` | GPIO4 / GPIO2 | PA12 / PB0 |
+| `keepalive-out` / `hw-wdt-out` | GPIO21 / GPIO20 | PA1 / PA0 |
+| `opto-out2` | GPIO15 | PA4 |
+| `opto-in1` / `opto-in2` | GPIO3 / GPIO17 | PA7 / PA5 |
+| `led0`…`led3` | *(onboard RGB — not a carrier net)* | PB12…PB15 |
+
+`opto_inputs` uses the `gpio-keys` binding purely so devicetree validates; no
+input driver is enabled. Read the pins with `GPIO_DT_SPEC_GET(DT_ALIAS(opto_in1),
+gpios)` as ordinary GPIOs.
+
+**Still the stock periodical-uplink sample.** The application does not yet read
+the thermocouples, poll the contactor feedback, or toggle the liveness-gated
+keep-alive / watchdog pulses. That is the next piece of work; the devicetree
+exposes everything it needs.
 
 ### KiCad project (`labsc-radioenge-bluepill`) — not yet touched
 

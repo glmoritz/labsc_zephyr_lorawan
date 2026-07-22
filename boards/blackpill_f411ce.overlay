@@ -14,15 +14,27 @@
  * Carrier row index b = y / 2.54 counted from the BlackPill's USB-C end.
  *
  *   LEFT row                          RIGHT row
- *   b8  PA12  MAX6675 #1 CS           b6  PA2   USART2 TX (console)
- *   b9  PA15  LR1121 NSS              b7  PA3   USART2 RX
- *   b10 PB3   SPI1 SCK                b13 PB1   555 keep-alive
- *   b11 PB4   SPI1 MISO               b14 PB10  hardware watchdog kick
+ *   b0  PB12  LED1 (BlackPill only)   b6   PB0   MAX6675 #2 CS
+ *   b1  PB13  LED2 (BlackPill only)   b7   PA7   opto IN1 (contactor)
+ *   b2  PB14  LED3 (BlackPill only)   b9   PA5   opto IN2 (RFU)
+ *   b3  PB15  LED4 (BlackPill only)   b10  PA4   opto OUT2 (RFU)
+ *   b8  PA12  MAX6675 #1 CS           b11  PA3   USART2 RX
+ *   b9  PA15  LR1121 NSS              b12  PA2   USART2 TX (console)
+ *   b10 PB3   SPI1 SCK                b13  PA1   555 keep-alive
+ *   b11 PB4   SPI1 MISO               b14  PA0   hardware watchdog kick
  *   b12 PB5   SPI1 MOSI
- *   b13 PB6   LR1121 NRESET           shared spares: PA7, PB0, PB2
- *   b14 PB7   MAX6675 #2 CS
+ *   b13 PB6   LR1121 NRESET           shared spare: PA6
+ *   b14 PB7   reserved - see below
  *   b15 PB8   LR1121 BUSY
  *   b16 PB9   LR1121 DIO9
+ *
+ * PB7 (b14-left) is deliberately UNROUTED: its ESP32-C6 partner is GPIO8, which
+ * drives that module's onboard addressable RGB LED. Leaving the pair NC is what
+ * keeps the C6's indicator usable.
+ *
+ * Unusable on this board: PB2 (BOOT1, outside the C6 span), PC13 (onboard LED,
+ * weak RTC pin), PC14/PC15 (32.768 kHz LSE crystal, populated), VBat (sits
+ * 3.81 mm from the C6 5V pad - never bridge).
  *
  * SPI1 uses its PB3/PB4/PB5 alternate mapping (not PA5/PA6/PA7) so all three bus
  * signals are consecutive on ONE socket row — that single change is what makes
@@ -30,7 +42,6 @@
  * pull-ups: harmless with SWD-only debug, and PA15's pull-up usefully holds
  * LR1121 NSS deasserted before firmware runs. PA12 is USB D+ (1.5k pull-up on
  * the BlackPill) — fine for a push-pull CS, which also wants to idle high.
- * PB2 is BOOT1 and is deliberately kept a spare, never a failsafe output.
  *
  * Console moves from USART1 (PA9/PA10) to USART2 (PA2/PA3): PA9/PA10 sit at
  * carrier rows b5/b6 of the LEFT row, where the C6's neighbours are GND and 3V3
@@ -41,6 +52,7 @@
  */
 
 #include <zephyr/dt-bindings/usp/lr11xx.h>
+#include <zephyr/dt-bindings/input/input-event-codes.h>
 
 /* LoRaWAN credentials (DevEUI / JoinEUI / AppKey / region). */
 #include "user_keys.overlay"
@@ -58,6 +70,54 @@
 		tc1 = &tc1;
 		keepalive-out = &keepalive_out;
 		hw-wdt-out = &hw_wdt_out;
+		opto-out2 = &opto_out2;
+		opto-in1 = &opto_in1;
+		opto-in2 = &opto_in2;
+		led0 = &led1;
+		led1 = &led2;
+		led2 = &led3;
+		led3 = &led4;
+	};
+
+	/*
+	 * Status LEDs. BlackPill-ONLY - the deliberate exception to the carrier's
+	 * parity rule. PB12-PB15 sit at rows b0-b3, which have no ESP32-C6 neighbour
+	 * at all, so four LEDs there cost nothing the C6 could have used. On the C6
+	 * the equivalent indication comes from its onboard RGB LED (GPIO8), which is
+	 * why row b14-left is left unrouted. Neither target loses a function; only
+	 * the form of the indication differs.
+	 */
+	status_leds {
+		compatible = "gpio-leds";
+		led1: led_1 { gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>; label = "status 1"; };
+		led2: led_2 { gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>; label = "status 2"; };
+		led3: led_3 { gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>; label = "status 3"; };
+		led4: led_4 { gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>; label = "status 4"; };
+	};
+
+	/* Isolated 12 V field I/O - see the esp32c6 overlay for the full rationale. */
+	opto_outputs {
+		compatible = "gpio-leds";
+		opto_out2: out2 {
+			gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;     /* PA4, b10-right (C6 D15) */
+			label = "isolated 12V output 2 (RFU)";
+		};
+	};
+
+	/* Both inputs active low with external pull-ups: a failed or unpowered
+	 * optocoupler reads as asserted, so a welded contactor fails to alarm. */
+	opto_inputs {
+		compatible = "gpio-keys";
+		opto_in1: in1 {
+			gpios = <&gpioa 7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA7, b7-right (C6 D3) */
+			label = "contactor dry contact";
+			zephyr,code = <INPUT_KEY_0>;
+		};
+		opto_in2: in2 {
+			gpios = <&gpioa 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA5, b9-right (C6 GPIO17) */
+			label = "isolated 12V input 2 (RFU)";
+			zephyr,code = <INPUT_KEY_1>;
+		};
 	};
 
 	/* Software-toggled failsafe outputs (NOT hardware PWM) — pulses must stop
@@ -65,11 +125,11 @@
 	failsafe_outputs {
 		compatible = "gpio-leds";
 		keepalive_out: keepalive {
-			gpios = <&gpiob 1 GPIO_ACTIVE_HIGH>;    /* PB1,  b13 (C6 D21) */
+			gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;    /* PA1, b13-right (C6 D21) */
 			label = "555 monostable keep-alive";
 		};
 		hw_wdt_out: hw-wdt {
-			gpios = <&gpiob 10 GPIO_ACTIVE_HIGH>;   /* PB10, b14 (C6 D20) */
+			gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;    /* PA0, b14-right (C6 D20) */
 			label = "external hardware watchdog kick";
 		};
 	};
@@ -100,9 +160,9 @@
 	pinctrl-names = "default";
 
 	/* One CS per device on the shared bus, indexed by each child's `reg`. */
-	cs-gpios = <&gpioa 15 GPIO_ACTIVE_LOW>,  /* reg 0: LR1121 NSS  (PA15, b9)  */
-		   <&gpioa 12 GPIO_ACTIVE_LOW>,  /* reg 1: MAX6675 #1  (PA12, b8)  */
-		   <&gpiob 7 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (PB7,  b14) */
+	cs-gpios = <&gpioa 15 GPIO_ACTIVE_LOW>,  /* reg 0: LR1121 NSS  (PA15, b9-left)  */
+		   <&gpioa 12 GPIO_ACTIVE_LOW>,  /* reg 1: MAX6675 #1  (PA12, b8-left)  */
+		   <&gpiob 0 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (PB0,  b6-right) */
 
 	lora_lr1121: lora@0 {
 		compatible = "semtech,lr1121";
