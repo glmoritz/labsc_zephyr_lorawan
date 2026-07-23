@@ -92,17 +92,17 @@
 	 */
 	status_leds {
 		compatible = "gpio-leds";
-		led1: led_1 { gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>; label = "status 1"; };
-		led2: led_2 { gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>; label = "status 2"; };
-		led3: led_3 { gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>; label = "status 3"; };
-		led4: led_4 { gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>; label = "status 4"; };
+		led1: led_1 { gpios = <&gpiob 12 GPIO_ACTIVE_HIGH>; label = "LED1"; };
+		led2: led_2 { gpios = <&gpiob 13 GPIO_ACTIVE_HIGH>; label = "LED2"; };
+		led3: led_3 { gpios = <&gpiob 14 GPIO_ACTIVE_HIGH>; label = "LED3"; };
+		led4: led_4 { gpios = <&gpiob 15 GPIO_ACTIVE_HIGH>; label = "LED4"; };
 	};
 
 	/* Isolated 12 V field I/O - see the esp32c6 overlay for the full rationale. */
 	opto_outputs {
 		compatible = "gpio-leds";
 		opto_out2: out2 {
-			gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;     /* PA4, b10-right (C6 D15) */
+			gpios = <&gpioa 4 GPIO_ACTIVE_LOW>;     /* OUT2_3V3 - PA4, b10-right (D15) */
 			label = "isolated 12V output 2 (RFU)";
 		};
 	};
@@ -112,12 +112,12 @@
 	opto_inputs {
 		compatible = "gpio-keys";
 		opto_in1: in1 {
-			gpios = <&gpioa 7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA7, b7-right (C6 D3) */
+			gpios = <&gpioa 7 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* IN1_3V3 - PA7, b7-right (D3) */
 			label = "contactor dry contact";
 			zephyr,code = <INPUT_KEY_0>;
 		};
 		opto_in2: in2 {
-			gpios = <&gpioa 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA5, b9-right (C6 GPIO17) */
+			gpios = <&gpioa 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* IN2_3V3 - PA5, b9-right (D23) */
 			label = "isolated 12V input 2 (RFU)";
 			zephyr,code = <INPUT_KEY_1>;
 		};
@@ -128,11 +128,11 @@
 	failsafe_outputs {
 		compatible = "gpio-leds";
 		keepalive_out: keepalive {
-			gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;    /* PA1, b13-right (C6 D21) */
+			gpios = <&gpioa 1 GPIO_ACTIVE_HIGH>;    /* LM555_ON_PULSE - PA1, b13-right (D21) */
 			label = "555 monostable keep-alive";
 		};
 		hw_wdt_out: hw-wdt {
-			gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;    /* PA0, b14-right (C6 D20) */
+			gpios = <&gpioa 0 GPIO_ACTIVE_HIGH>;    /* OUT1_3V3 - PA0, b14-right (D20) */
 			label = "external hardware watchdog kick";
 		};
 	};
@@ -173,18 +173,18 @@
 	 * dead space, and it ends up closer to the MAX6675 header on the top edge
 	 * than PA12 was. The C6 end is unchanged.
 	 */
-	cs-gpios = <&gpioa 15 GPIO_ACTIVE_LOW>,  /* reg 0: LR1121 NSS  (PA15, b9-left)  */
-		   <&gpioa 8 GPIO_ACTIVE_LOW>,   /* reg 1: MAX6675 #1  (PA8,  b4-left)  */
-		   <&gpiob 0 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (PB0,  b6-right) */
+	cs-gpios = <&gpioa 15 GPIO_ACTIVE_LOW>,  /* LR1121_SSEL  (PA15, b9-left) */
+		   <&gpioa 8 GPIO_ACTIVE_LOW>,   /* TEMP1_SSEL   (PA8,  b4-left) */
+		   <&gpiob 0 GPIO_ACTIVE_LOW>;   /* TEMP2_SSEL   (PB0,  b6-right) */
 
 	lora_lr1121: lora@0 {
 		compatible = "semtech,lr1121";
 		reg = <0>;
 		spi-max-frequency = <DT_FREQ_M(16)>;
 
-		reset-gpios = <&gpiob 6 GPIO_ACTIVE_LOW>;                        /* PB6, b13 (C6 D1)  */
-		busy-gpios  = <&gpiob 8 GPIO_ACTIVE_HIGH>;                       /* PB8, b15 (C6 D10) */
-		event-gpios = <&gpiob 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* PB9, b16 (C6 D11) = DIO9 */
+		reset-gpios = <&gpiob 6 GPIO_ACTIVE_LOW>;                        /* LR1121_RESET - PB6, b13 (D1) */
+		busy-gpios  = <&gpiob 8 GPIO_ACTIVE_HIGH>;                       /* LR1121_BUSY  - PB8, b15 (D10) */
+		event-gpios = <&gpiob 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* LR1121_IRQ   - PB9, b16 (D11) */
 
 		/* TODO: confirm against Core1121 R3/R4 population (HP only vs LP+HP). */
 		lf-tx-path = <LR11XX_TX_PATH_LF_LP_HP>;

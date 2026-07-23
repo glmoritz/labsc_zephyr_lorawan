@@ -72,6 +72,41 @@ reach the modem. At k = 4 the offender is PA11 *and* PB9 is lost as well.
 
 ## 2. Master pin table
 
+### 2.0 Function map — canonical net names
+
+Net names are taken from `labsc-radioenge-bluepill/lora-bluepill-sch.kicad_sch`
+and extracted from the schematic's actual pin-to-net connectivity, not from the
+label list. **The schematic net name is authoritative**; the devicetree alias is
+what firmware uses.
+
+| Function | Net | BlackPill | ESP32-C6 | DT alias | Obs |
+|---|---|---|---|---|---|
+| SPI clock | `SCLK` | PB3 | D6 | — | b10-L |
+| SPI MISO | `MISO` | PB4 | D7 | — | b11-L |
+| SPI MOSI | `MOSI` | PB5 | D0 | — | b12-L |
+| LR1121 chip select | `LR1121_SSEL` | PA15 | D5 | `lora-transceiver` | b9-L · `cs-gpios` reg 0 |
+| LR1121 reset | `LR1121_RESET` | PB6 | D1 | — | b13-L · active low |
+| LR1121 busy | `LR1121_BUSY` | PB8 | D10 | — | b15-L · ⚠ **BlackPill end missing in the schematic** |
+| LR1121 DIO9 IRQ | `LR1121_IRQ` | PB9 | D11 | — | b16-L · pull-down |
+| MAX6675 #1 CS (hot zone) | `TEMP1_SSEL` | **PA8** | D4 | `tc0` | ⚠ schematic still has **PA12** · split row, see §5.3 |
+| MAX6675 #2 CS (cold zone) | `TEMP2_SSEL` | PB0 | D2 | `tc1` | b6-R · `cs-gpios` reg 2 |
+| Shared UART TX | `UART_AT_TX` | PA2 | TX (GPIO16) | `atuart` | split b12-R / b8-R · console **and** AT port (§9) |
+| Shared UART RX | `UART_AT_RX` | PA3 | RX (GPIO17) | `atuart` | split b11-R / b9-R |
+| Contactor dry contact | `IN1_3V3` | PA7 | D3 | `opto-in1` | b7-R · active low |
+| Field input 2 (RFU) | `IN2_3V3` | PA5 | D23 | `opto-in2` | split b9-R / b11-R · active low |
+| HW watchdog kick | `OUT1_3V3` | PA0 | D20 | `hw-wdt-out` | b14-R · software-toggled pulse only (§5.4) |
+| Field output 2 (RFU) | `OUT2_3V3` | PA4 | D15 | `opto-out2` | b10-R · active-low sink · D15 is a C6 strap |
+| 555 keep-alive | `LM555_ON_PULSE` | PA1 | D21 | `keepalive-out` | b13-R · software-toggled pulse only (§5.4) |
+| Status LEDs 1–4 | `LED1`…`LED4` | PB12–PB15 | — | `led0`…`led3` | b0–b3 L · BlackPill only (§6.1) |
+| Indicator (C6) | — | — | D8 | — | b14-L **reserved NC** so the onboard RGB stays usable |
+
+Nets that never reach an MCU pin: `IN1_DRY1` / `IN1_DRY2` / `IN2_DRY1` /
+`IN2_DRY2` (screw terminals), `OUT1_OC` / `OUT2_OC` (optocoupler collectors),
+`PULSE_DETECTOR_OUT` (555 output), `FTDI_TX` / `FTDI_RX` (see §8).
+
+Banned on the BlackPill: **PA11 / PA12** (USB D−/D+, §5.3). Free and unused:
+PA6, PB1, PB2, PB10, PC13, PA9, PA10, PB7.
+
 ### 2.1 Left rows — RF, thermocouples, SPI
 
 | b | y (mm) | BlackPill | ESP32-C6 | Net | Notes |
@@ -440,6 +475,43 @@ the thermocouples, poll the contactor feedback, or toggle the liveness-gated
 keep-alive / watchdog pulses. That is the next piece of work; the devicetree
 exposes everything it needs.
 
+### Schematic is out of sync — extracted deltas
+
+Read out of `lora-bluepill-sch.kicad_sch` by walking wire connectivity to each
+symbol pin. The schematic is still at the **expansion-port** state, which §10
+retired. To match §2.0:
+
+| # | Schematic today | Change to |
+|---|---|---|
+| 1 | `PA12` = `TEMP1_SSEL` | **`PA8`** = `TEMP1_SSEL` — PA12 is USB D+ (§5.3) |
+| 2 | `PB8` = `EXP_BP_SCL` | **`PB8` = `LR1121_BUSY`** |
+| 3 | `PB7` = `EXP_BP_SDA` | **NC** (reserved, §6.1) |
+| 4 | `PA9`/`PA10` = `EXP_BP_TX`/`EXP_BP_RX` | **NC** |
+| 5 | `PA8` = `EXP_BP_IRQ` | now `TEMP1_SSEL`, per row 1 |
+| 6 | C6 `D9`/`D18`/`D19`/`D22` = `EXP_C6_*` | **NC** |
+| 7 | Radioenge `GPIO2`–`GPIO6` = `EXP_BP_*` | **NC** — row B is spare again |
+
+⚠ **`LR1121_BUSY` has no BlackPill connection at all right now.** The C6 end is
+on D10, but PB8 was taken by `EXP_BP_SCL` and the BlackPill end was never
+rewired. This is a real hole, not a naming issue — the LR1121 driver polls BUSY
+on every transaction, so the STM32 build would not work as drawn. Fixing row 2
+closes it.
+
+⚠ **`FTDI_TX` / `FTDI_RX` reach nothing.** They connect only to the FTDI
+breakout (U2 pads 3 and 2); no MCU pin, no other net. Either wire them to the
+shared UART as a debug tap — `FTDI_RX` ↔ `UART_AT_TX` and `FTDI_TX` ↔
+`UART_AT_RX`, crossover — or delete the symbol. There is no second UART pair
+available on this carrier (§9), so a separate debug port is not an option.
+
+⚠ **Radioenge `AT_RX` (pad 2) appears unconnected.** `AT_TX` (pad 3) correctly
+reaches `UART_AT_RX`, but nothing was found on pad 2. Verify — the modem cannot
+receive commands without it.
+
+`peripherals.kicad_sch` is **stale BluePill-era work**: it carries `PB11` (which
+does not exist on the F411CE LQFP48), plus `I2C1_SCL`/`I2C1_SDA`,
+`ADC1_IN0`/`ADC1_IN1` and an LM35 symbol that are not part of this design.
+Delete or rewrite it.
+
 ### KiCad project (`labsc-radioenge-bluepill`) — not yet touched
 
 1. ⚠ **`symbols/YAAJ_BlackPill.kicad_sym` is a BluePill symbol**, not a
@@ -448,8 +520,8 @@ exposes everything it needs.
    will silently mis-map the entire right-hand header. **The replacement already
    exists**: use `Kicad-STM32/Symbols/YAAJ_WeAct_BlackPill_Part_Like.kicad_sym`
    (40 pins, correct F411CE pinout), which is verified consistent with the
-   footprint and with the physical board. Switch the schematic over to it and
-   retire the old symbol.
+   footprint and with the physical board. **Done** — the schematic now
+   instantiates `YAAJ_WeAct_BlackPill_Part_Like` (U10).
 2. ⚠ **`LoRaModuleRadioenge.kicad_mod` is parallel-numbered, not U-shaped** —
    pad 1 sits at (0, 0) and pad 9 directly beside it at (−17.78, 0), so pad 1 and
    pad 16 end up diagonally opposite. Confirm the module's real pin 1 is at the
