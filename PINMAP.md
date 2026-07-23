@@ -195,6 +195,8 @@ usable right-hand row, precisely so that run is short. **No crossings, no vias.*
 No relays on this board. Screw terminals are **open-drain outputs** (from the
 optocoupler transistor) and **dry-contact inputs**.
 
+→ **§9 drops IN2** (its pin becomes the expansion interrupt), leaving 2 out / 1 in.
+
 | Channel | Dir | C6 | STM32 | Sense | Purpose |
 |---|---|---|---|---|---|
 | OUT1 | out | D20 | PA0 | pulse | hardware watchdog kick → cuts mains to oven |
@@ -293,6 +295,9 @@ until a human intervenes. Both `RST` pins are deliberately NC.
 
 GPIO16/17 are not in that count: they are the ROM UART pair and carry the console
 on both sockets.
+
+→ **§9 spends that spare and three of the dead pairs** on the planned expansion
+connectors, taking the C6 to 18 of 18 allocated.
 
 **Every shared net except the four in §2.2 is a true geometric pair** — one
 3.81 mm stub, no diagonal, no layer change. The one spare left is **PA6 (b8-right)
@@ -459,3 +464,238 @@ exposes everything it needs.
   reference values — recalibrate for the Core1121-XF BOM.
 - Application firmware for the thermocouple reads and the liveness-gated
   keep-alive / watchdog pulses is still the stock periodical-uplink sample.
+
+---
+
+## 9. Expansion connectors — **planned, not yet implemented**
+
+Nothing in this section is routed or in the overlays yet. §2–§8 describe the
+board as it stands; this is the agreed design for the next revision.
+
+Purpose: turn the carrier into an industrial-controller base. The daughterboard
+carries 4–20 mA I/O, RS485/Modbus RTU and optionally CAN, built from **I²C
+converters** (ADC/DAC/expander) rather than from raw MCU peripherals.
+
+### 9.1 Why two connectors and not one
+
+A single shared connector is electrically fine, but every one of its five
+signals would have to reach **both** socket columns, which means five traces
+crossing the **15.24 mm centre channel** — the space reserved for the power
+pour. That directly worsens the one SI risk already flagged in §7: 16 MHz SPI on
+two layers with a fragmented ground return.
+
+With one connector per socket, every expansion signal stays outboard of its own
+column and **the centre channel stays solid**. Secondary benefits: no 40–60 mm
+nets, no ~25 mm dead stubs hanging off the unpopulated socket, and a short I²C
+bus on both variants.
+
+Note this is *not* what buys hardware I²C — a cross-board net would give that
+too. Both topologies need exactly one relocation (§9.4). The centre channel is
+the whole argument.
+
+Parity is preserved at the **feature** level: both connectors carry the same
+five signals with the same pinout, so one daughterboard with one header plugs
+into whichever socket was populated. Only one MCU is ever fitted, so only one
+connector is ever live. No jumpers, nothing to mis-set.
+
+### 9.2 Connector — 8-pin, identical on both
+
+| Pin | Signal |
+|---|---|
+| 1 | GND |
+| 2 | +3V3 |
+| 3 | +5V |
+| 4 | `EXP_SCL` |
+| 5 | `EXP_SDA` |
+| 6 | `EXP_TX` |
+| 7 | `EXP_RX` |
+| 8 | `EXP_INT` |
+
+⚠ **Logic domain only — no 12 V on this connector.** Bringing field power across
+it destroys the isolation barrier built from the DC-DC and the optocouplers. The
+daughterboard brings in its own loop supply through its own terminals and does
+its own isolation (ISO1540 on I²C, ADM2582E on RS485), so the daughterboard —
+not the carrier — owns the creepage geometry.
+
+### 9.3 Pin sources
+
+**ESP32-C6 connector** — all five pads are on the right column, rows b11–b17,
+so it lands naturally on the bottom-right edge.
+
+| Signal | C6 pad | Row | y (mm) | Peripheral |
+|---|---|---|---|---|
+| `EXP_SCL` | D18 | b16-R | 40.64 | `i2c0`, `I2C0_SCL_GPIO18` |
+| `EXP_SDA` | D19 | b15-R | 38.10 | `i2c0`, `I2C0_SDA_GPIO19` |
+| `EXP_TX` | **D9** | b17-R | 43.18 | `uart1`, `UART1_TX_GPIO9` — ⚠ strapping pin, see §9.6 |
+| `EXP_RX` | D22 | b12-R | 30.48 | `uart1`, `UART1_RX_GPIO22` |
+| `EXP_INT` | D23 | b11-R | 27.94 | GPIO — costs OPTO_IN2, see §9.5 |
+
+**BlackPill connector** — two groups on the left column.
+
+| Signal | BP pin | Row | y (mm) | Peripheral |
+|---|---|---|---|---|
+| `EXP_SCL` | **PB8** | b15-L | 38.10 | `i2c1_scl_pb8` — needs the §9.4 relocation |
+| `EXP_SDA` | **PB7** | b14-L | 35.56 | `i2c1_sda_pb7` — **free today**, adjacent to SCL |
+| `EXP_TX` | PA9 | b5-L | 12.70 | `usart1_tx_pa9` |
+| `EXP_RX` | PA10 | b6-L | 15.24 | `usart1_rx_pa10` |
+| `EXP_INT` | PA8 | b4-L | 10.16 | GPIO (EXTI8) |
+
+**Both MCUs get hardware I²C** — `i2c0` on the C6, `i2c1` on the STM32. The
+`gpio-i2c` bit-bang fallback drops out of the design, though it remains available
+in software on the same pins if the STM32F4's I²C BUSY-flag errata ever bite.
+
+`PB7` is the **only** free SDA-capable pin on the F411 — every other I²C SDA
+alternate (PB3, PB4, PB9) is occupied by the SPI bus or the LoRa IRQ. That is
+what fixes the STM32 side to I²C1 and therefore to PB8 for SCL.
+
+### 9.4 The one relocation — `LORA_BUSY`
+
+To free PB8 for `i2c1_scl`:
+
+| | before | after |
+|---|---|---|
+| C6 end | D10 (b15-L) | **D10 (b15-L)** — unchanged |
+| BP end | PB8 (b15-L) | **PA11 (b7-L)** |
+
+- PA11 is free today (its C6 partner is `RST`, a dead pair). USB device mode on
+  the BlackPill was already foreclosed by PA12 = TC1_CS, so nothing is lost.
+- The net runs from D10 up the **outboard-left** free space to PA11 — 20.32 mm,
+  or straight along the bottom layer. Both pads are through-hole, so it costs a
+  layer change at the pad, not a via. BUSY is a polled status level; length is
+  irrelevant.
+- EXTI stays clean: BUSY is polled, `LORA_DIO9` keeps PB9 (EXTI9).
+
+Two left-hand rows become **split** (the pattern already used at b8–b12 right):
+
+| Row | BlackPill pad | C6 pad |
+|---|---|---|
+| b14-L | `PB7` = EXP_SDA | `D8` — still reserved NC (§6.1) |
+| b15-L | `PB8` = EXP_SCL | `D10` = LORA_BUSY |
+
+**The C6's onboard RGB LED survives**, because PB7's C6 partner is never needed.
+
+### 9.5 What it costs
+
+| | |
+|---|---|
+| Connector footprints | 2 × 8-pin |
+| Nets relocated | **1** (LORA_BUSY's BlackPill end) |
+| Functions dropped | **OPTO_IN2** (RFU) → §4 becomes 2 out / 1 in |
+| Nets crossing the centre pour | **0** |
+| C6 RGB LED | kept |
+| Status LEDs, SPI trio, both CS, NRESET, DIO9, OPTO_IN1, keepalive, watchdog, console | untouched |
+| Placement geometry (§7) | unchanged |
+
+Dropping `EXP_INT` gives a 7-pin connector and **nothing is sacrificed at all** —
+total disruption becomes one net with a longer trace. Not recommended: polling an
+MCP23017 over I²C instead of taking its interrupt is the difference between ~1 ms
+and ~50 ms on a digital input, which is the entire point of the expander.
+
+Budget after implementing (compare §6):
+
+| | count |
+|---|---|
+| C6 module GPIO pins (D0–D13, D15, D18–D23) | 21 |
+| − D12 / D13 — native USB | −2 |
+| − D8 — reserved NC for the onboard RGB LED | −1 |
+| **Available** | **18** |
+| Allocated | **18** |
+| **Free** | **0** |
+
+D9, D18 and D19 stop being dead pairs — they gain BlackPill partners by routing
+rather than by adjacency. After this the board is genuinely full.
+
+### 9.6 Strap rule for `EXP_TX` on D9
+
+D9 is a boot-mode strapping pin and must be **high at reset**. It is safe here
+for one specific reason: a UART TX **idles high, and the MCU drives it** — the
+far end (an RS485 driver's DI, or a CAN transceiver's TXD) is an input, so
+nothing external can ever pull it low. Fit a **10 kΩ pull-up to 3V3** to cover
+the window before firmware configures the pin; that is strictly safer than the
+floating pad it is today.
+
+⚠ **No remotely-driven signal may ever be moved onto D8 or D9.** `EXP_RX`,
+`EXP_SDA` and `EXP_INT` are all driven by the daughterboard: a wedged I²C slave,
+an asserted expander interrupt, or a transceiver whose RO output is low at
+power-on would put the C6 into serial-download mode, and the controller stays
+dead until someone power-cycles it in the right order. That is a field failure,
+not a debug annoyance.
+
+### 9.7 Daughterboard notes
+
+**No raw AIN, no raw PWM.** Both come from I²C silicon. This is not a compromise
+for 4–20 mA: the only two ADC-capable shared positions on the carrier are b6-R
+and b7-R (C6 ADC1 is GPIO0–GPIO6, and all seven are used), and a 12-bit
+single-ended ADC referenced to a switching 3V3 gives maybe 8 usable bits across a
+burden resistor. Use an ADS1115 / MCP3428 (16-bit differential, PGA, own
+reference) for input and an MCP4728 + XTR111 — or a dedicated AD5421 — for
+output. PWM, if wanted, from a PCA9685.
+
+**RS485 and CAN share `EXP_TX`/`EXP_RX`.** Put a transceiver-select jumper on the
+daughterboard; both are 2-wire differential buses landing on the same screw
+terminal and no small controller uses both at once.
+
+- On the C6, TWAI is matrix-routable — the same two pads become CAN with
+  `TWAI0_TX_GPIO9` / `TWAI0_RX_GPIO22`. CAN TX idles recessive (high), so D9's
+  strap rule still holds.
+- **The STM32F411 has no CAN at all** (the `can*` alternate-function table is
+  empty). On the BlackPill those pads stay `usart1` and you get RS485 only. CAN
+  can never be a symmetric feature of this carrier.
+
+**Skip the DE pin — use an auto-direction transceiver** (MAX13487E, SP3072E),
+good well past 115200, far above any Modbus RTU link. A hardware DE would need a
+sixth signal, and its only strap-safe home on the C6 is D8, which costs the RGB
+LED. Not worth it.
+
+**Don't widen the BlackPill connector.** The F411 has surplus left (PB1, PB10,
+PB12–PB15, PC13), but a daughterboard that only half-works depending on which MCU
+is fitted defeats the reason this carrier exists. Bring them out as test points.
+
+### 9.8 Placement
+
+Both connectors can share the **bottom edge**, side by side: the C6's five pads
+are already at rows b11–b17 right, and the BlackPill's UART group (b4–b6 left)
+makes a ~30 mm run down the outboard-left free space that never enters the centre
+channel. Alternatively put the BlackPill connector on the left edge.
+
+Edge budget is now tight — top edge carries both USB-C plus the two MAX6675
+right-angle headers, one edge carries the 12 V screw terminals, and the expansion
+connectors want a third.
+
+### 9.9 Firmware sketch
+
+Not implemented. Shape of the devicetree when it is:
+
+```dts
+/* ESP32-C6 */
+&pinctrl {
+    i2c0_exp: i2c0_exp {
+        group1 { pinmux = <I2C0_SCL_GPIO18>, <I2C0_SDA_GPIO19>;
+                 bias-pull-up; drive-open-drain; output-high; };
+    };
+    uart1_exp: uart1_exp {
+        group1 { pinmux = <UART1_TX_GPIO9>;  output-high; };
+        group2 { pinmux = <UART1_RX_GPIO22>; bias-pull-up; };
+    };
+};
+
+/* STM32 */
+&i2c1  { pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb7>; };
+&usart1 { pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>; };
+```
+
+Aliases to expose so application code is target-independent: `expi2c`, `expuart`,
+`exp-int`. Modbus RTU goes through `CONFIG_MODBUS_SERIAL` on `expuart`; with an
+auto-direction transceiver the `de-gpios`/`re-gpios` properties are omitted.
+
+### 9.10 Verify before routing
+
+- ⚠ **Is PA9 tied to USB VBUS sense on this BlackPill revision?** The F411's
+  OTG_FS uses PA9 as `OTG_FS_VBUS` and some F411 boards strap it. This is the one
+  fact in §9 that could not be confirmed from anything in the repo, and it is
+  load-bearing for `EXP_TX`. If it is strapped, the fallback is awkward —
+  `usart6_tx` is PA11 (now LORA_BUSY) and `usart6_rx` is PA12 (TC1_CS), so it
+  becomes a real reshuffle rather than a swap.
+- Confirm the expander's INT output is inactive (high) at POR, and fit the I²C
+  pull-ups on the **daughterboard**, not the carrier, so an unplugged connector
+  leaves no floating bus.

@@ -59,6 +59,10 @@ then applies the patches in `patches/` (see *Known workarounds* below).
 > position-by-position table, the 12 V field I/O, the strap rules and the board
 > placement offsets. The summary below is kept for orientation only; if the two
 > disagree, `PINMAP.md` wins.
+>
+> `PINMAP.md` **§9** describes the planned **dual expansion connectors** (I²C +
+> UART + INT, one per socket) for the industrial-controller revision. Not routed
+> and not in the overlays yet.
 
 The target hardware is a **dual-socket carrier**: it accepts *either* an ESP32-C6
 mini *or* a WeAct BlackPill F411CE, in overlapped 2.54 mm socket rows, so both
