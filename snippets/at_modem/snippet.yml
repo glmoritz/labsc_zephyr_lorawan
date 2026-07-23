@@ -1,0 +1,15 @@
+# Radioenge AT-modem build: hands the shared carrier UART to the modem.
+#
+# There is exactly ONE UART both sockets can reach (BlackPill USART2 on PA2/PA3,
+# ESP32-C6 uart0 on GPIO16/17), and the Radioenge's AT_RX/AT_TX hang off it. A
+# console or log backend on that UART would inject bytes into the AT stream and
+# try to parse AT responses back — so in AT mode nothing but the modem may own
+# it. This snippet removes every other writer.
+#
+#   west build -S at_modem -b <board> .
+#
+# Use the alias `atuart` to get the port from application code; it resolves to
+# the right UART on both targets.
+name: at_modem
+append:
+  EXTRA_CONF_FILE: at_modem.conf

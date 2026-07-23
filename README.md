@@ -60,9 +60,8 @@ then applies the patches in `patches/` (see *Known workarounds* below).
 > placement offsets. The summary below is kept for orientation only; if the two
 > disagree, `PINMAP.md` wins.
 >
-> `PINMAP.md` **§9** describes the planned **dual expansion connectors** (I²C +
-> UART + INT, one per socket) for the industrial-controller revision. Not routed
-> and not in the overlays yet.
+> When a **Radioenge modem** is fitted, build with the `at_modem` snippet — the
+> shared UART is the AT port and nothing else may write to it (`PINMAP.md` §9).
 
 The target hardware is a **dual-socket carrier**: it accepts *either* an ESP32-C6
 mini *or* a WeAct BlackPill F411CE, in overlapped 2.54 mm socket rows, so both
@@ -99,7 +98,8 @@ in Y. Consequences:
 | b | BlackPill | ESP32-C6 | Net |
 |---|-----------|----------|-----|
 | **LEFT rows — RF + sensors** ||||
-| 8 | PA12 | D4 | MAX6675 #1 CS (`cs-gpios` reg 1, node `tc0`) |
+| 4 | **PA8** | *(→ D4)* | MAX6675 #1 CS (`cs-gpios` reg 1, node `tc0`) |
+| 8 | PA12 ⚠ *banned* | D4 | C6 end of MAX6675 #1 CS |
 | 9 | PA15 | D5 | LR1121 NSS (`cs-gpios` reg 0) |
 | 10 | PB3 | D6 | SPI SCK |
 | 11 | PB4 | D7 | SPI MISO |
@@ -136,16 +136,18 @@ LR1121 DIO7/DIO8 are broken out on the Core1121 header and unused.
   picks first and the C6 follows — the opposite of the intuitive ordering.
 - **Console moves to USART2 (PA2/PA3).** USART1's PA9/PA10 sit at rows b5/b6
   where the C6's neighbours are GND and 3V3.
-- **D8 (strapping) carries a chip select** — a host-driven output that idles
-  high, which is what the strap wants at boot. Device-driven inputs (BUSY, MISO,
-  UART RX) are deliberately kept off D8/D9/D15.
+- **D8 is reserved NC** so the C6's onboard RGB LED stays usable. Device-driven
+  inputs (BUSY, MISO, UART RX) are deliberately kept off the straps D8/D9/D15;
+  only host-driven, idle-high outputs may ever go there.
 - **D15 must be left unconnected.** It selects the JTAG source; pulling it low
   costs USB-Serial-JTAG debugging. Keeping it high is also what makes D4–D7
   (the pin-JTAG group) safe to use as ordinary GPIO.
 - **PA15/PB3/PB4 are JTAG pins** with reset pull-ups — harmless with SWD-only
   debug, and PA15's pull-up usefully holds NSS deasserted before firmware runs.
-- **PA12 is USB D+** on the BlackPill (1.5k pull-up); fine for a push-pull CS,
-  which also wants to idle high.
+- ⚠ **PA11/PA12 (USB D−/D+) are banned from carrier nets.** The BlackPill's USB
+  port is used routinely for flashing and power. `TC1_CS` therefore lives on
+  **PA8** (b4-left) while its C6 end stays D4 at b8-left — a ~10 mm run up the
+  left column, and closer to the MAX6675 header than PA12 was.
 
 ### There are no "STM-only" pins
 
@@ -195,10 +197,9 @@ in agreement:
   bottom-left.** An earlier revision nested them (Radioenge at Core1121 +
   (X +11.43, Y +17.78), four columns at −6.35 / 0 / +11.43 / +15.24, 21.59 mm
   total instead of ~43 mm side by side) — **that is obsolete**. Un-nesting costs
-  board area and buys the Radioenge pad field as the BlackPill expansion header;
-  see `PINMAP.md` §9.8. Only Radioenge row A (GND, AT_RX, AT_TX, VCC) is wired for
-  the modem; row B (pads 9–16) becomes the expansion connector, and the two are
-  **assembly alternatives — never populate both**.
+  board area; both modems can now be populated at once, though only one is ever
+  used. Only Radioenge row A (GND, AT_RX, AT_TX, VCC) is electrically wired; its
+  row B (pads 9–16, GPIO2–GPIO9) is spare.
 - **Place the Core1121 at Y +17.78** relative to the BlackPill origin and its
   CS / SCLK / RESET pads land on the *exact* y of carrier rows b9 / b10 / b13 —
   three dead-straight tracks. Only MISO/MOSI cross (the module orders them

@@ -18,7 +18,7 @@
  *   b1  PB13  LED2 (BlackPill only)   b7   PA7   opto IN1 (contactor)
  *   b2  PB14  LED3 (BlackPill only)   b9   PA5   opto IN2 (RFU)
  *   b3  PB15  LED4 (BlackPill only)   b10  PA4   opto OUT2 (RFU)
- *   b8  PA12  MAX6675 #1 CS           b11  PA3   USART2 RX
+ *   b4  PA8   MAX6675 #1 CS           b11  PA3   USART2 RX
  *   b9  PA15  LR1121 NSS              b12  PA2   USART2 TX (console)
  *   b10 PB3   SPI1 SCK                b13  PA1   555 keep-alive
  *   b11 PB4   SPI1 MISO               b14  PA0   hardware watchdog kick
@@ -32,7 +32,8 @@
  * drives that module's onboard addressable RGB LED. Leaving the pair NC is what
  * keeps the C6's indicator usable.
  *
- * Unusable on this board: PB2 (BOOT1, outside the C6 span), PC13 (onboard LED,
+ * Unusable on this board: PA11/PA12 (USB D-/D+ - BANNED from carrier nets, see
+ * the cs-gpios comment), PB2 (BOOT1, outside the C6 span), PC13 (onboard LED,
  * weak RTC pin), PC14/PC15 (32.768 kHz LSE crystal, populated), VBat (sits
  * 3.81 mm from the C6 5V pad - never bridge).
  *
@@ -40,12 +41,13 @@
  * signals are consecutive on ONE socket row — that single change is what makes
  * the carrier fanout crossing-free. PA15/PB3/PB4 are JTAG pins with reset
  * pull-ups: harmless with SWD-only debug, and PA15's pull-up usefully holds
- * LR1121 NSS deasserted before firmware runs. PA12 is USB D+ (1.5k pull-up on
- * the BlackPill) — fine for a push-pull CS, which also wants to idle high.
+ * LR1121 NSS deasserted before firmware runs.
  *
  * Console moves from USART1 (PA9/PA10) to USART2 (PA2/PA3): PA9/PA10 sit at
  * carrier rows b5/b6 of the LEFT row, where the C6's neighbours are GND and 3V3
- * — unusable. USART2 is the only shared UART.
+ * — unusable. USART2 is the only shared UART, so it is BOTH the debug console
+ * and the Radioenge AT port. Those cannot coexist: build with the `at_modem`
+ * snippet when a Radioenge is fitted (see snippets/at_modem/).
  *
  * The tx-power / rssi / current tables below are LR1121-MB1 reference values and
  * must be recalibrated for the Core1121-XF BOM (same as the esp32c6 overlay).
@@ -53,7 +55,6 @@
 
 #include <zephyr/dt-bindings/usp/lr11xx.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
-#include <zephyr/dt-bindings/i2c/i2c.h>
 
 /* LoRaWAN credentials (DevEUI / JoinEUI / AppKey / region). */
 #include "user_keys.overlay"
@@ -73,9 +74,8 @@
 		hw-wdt-out = &hw_wdt_out;
 		opto-out2 = &opto_out2;
 		opto-in1 = &opto_in1;
-		expi2c = &i2c1;
-		expuart = &usart1;
-		exp-int = &exp_int;
+		opto-in2 = &opto_in2;
+		atuart = &usart2;
 		led0 = &led1;
 		led1 = &led2;
 		led2 = &led3;
@@ -107,9 +107,8 @@
 		};
 	};
 
-	/* IN1 is active low with an external pull-up: a failed or unpowered
-	 * optocoupler reads as asserted, so a welded contactor fails to alarm.
-	 * IN2 was dropped — PA5 is free; PA8 now carries EXP_INT (PINMAP.md §9). */
+	/* Both inputs active low with external pull-ups: a failed or unpowered
+	 * optocoupler reads as asserted, so a welded contactor fails to alarm. */
 	opto_inputs {
 		compatible = "gpio-keys";
 		opto_in1: in1 {
@@ -117,19 +116,9 @@
 			label = "contactor dry contact";
 			zephyr,code = <INPUT_KEY_0>;
 		};
-	};
-
-	/*
-	 * Expansion connector interrupt (PINMAP.md §9). DISABLED BY DEFAULT — see
-	 * the tri-state note further down. No bias: the pull-up lives on the
-	 * daughterboard so this pin is genuinely Hi-Z when the port is not selected.
-	 */
-	expansion_int: expansion_int {
-		compatible = "gpio-keys";
-		status = "disabled";
-		exp_int: exp-int {
-			gpios = <&gpioa 8 GPIO_ACTIVE_LOW>;     /* PA8, b4-left */
-			label = "expansion interrupt";
+		opto_in2: in2 {
+			gpios = <&gpioa 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA5, b9-right (C6 GPIO17) */
+			label = "isolated 12V input 2 (RFU)";
 			zephyr,code = <INPUT_KEY_1>;
 		};
 	};
@@ -150,44 +139,11 @@
 };
 
 /*
- * Shared console UART. USART2 on PA2/PA3 is the only UART both sockets can
- * reach as a shared net (the C6 end is its ROM pair GPIO16/17).
- */
-
-/*
- * ============================ EXPANSION PORT ============================
- *
- * BOTH NODES BELOW STAY DISABLED BY DEFAULT. That is deliberate, not an
- * oversight: with the peripherals disabled Zephyr never applies their pinctrl,
- * so PB7, PB8, PA8, PA9 and PA10 stay in their reset state — GPIO input,
- * floating, genuinely Hi-Z — for the whole life of the image.
- *
- * Why it matters: these five signals land on the Radioenge pad field, and its
- * row B is that module's GPIO2..GPIO9 (PINMAP.md §9.8). A Radioenge modem and
- * an expansion board are assembly alternatives on the same pads, and a fitted
- * Radioenge may legitimately drive its GPIOs. Our side staying tri-stated is
- * exactly what makes fitting one safe — so DO NOT flip these to "okay" here.
- *
- * Enable the port explicitly:   west build -S expansion -b blackpill_f411ce .
- *
- * PB7 is the only free SDA-capable pin on the F411, which forces I2C1 and
- * therefore PB8 for SCL — that is why LORA_BUSY moved to PA11.
- */
-&i2c1 {
-	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb7>;
-	pinctrl-names = "default";
-	clock-frequency = <I2C_BITRATE_STANDARD>;
-	status = "disabled";
-};
-
-/*
- * Expansion UART. RS485/Modbus RTU via an auto-direction transceiver, so no
- * de-gpios/re-gpios. The F411 has no CAN, so the CAN option is C6-only.
+ * Shared UART. PA9/PA10 (USART1, the board default) are unusable on the carrier:
+ * at rows b5/b6 their ESP32-C6 neighbours are GND and 3V3. USART2 on PA2/PA3 is
+ * the only UART both sockets can reach.
  */
 &usart1 {
-	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
-	pinctrl-names = "default";
-	current-speed = <115200>;
 	status = "disabled";
 };
 
@@ -206,9 +162,19 @@
 	pinctrl-0 = <&spi1_sck_pb3 &spi1_miso_pb4 &spi1_mosi_pb5>;
 	pinctrl-names = "default";
 
-	/* One CS per device on the shared bus, indexed by each child's `reg`. */
+	/*
+	 * One CS per device on the shared bus, indexed by each child's `reg`.
+	 *
+	 * TC1_CS is on PA8 (b4-left), NOT on PA12 at b8-left where its ESP32-C6
+	 * partner D4 sits. PA11/PA12 are the BlackPill's USB D-/D+ and are banned
+	 * from carrier nets: D+ carries a 1.5k pull-up, and both contend with a USB
+	 * cable that gets plugged in routinely for flashing and power. This net is
+	 * therefore a ~10 mm run up the left column from D4 (b8) to PA8 (b4) through
+	 * dead space, and it ends up closer to the MAX6675 header on the top edge
+	 * than PA12 was. The C6 end is unchanged.
+	 */
 	cs-gpios = <&gpioa 15 GPIO_ACTIVE_LOW>,  /* reg 0: LR1121 NSS  (PA15, b9-left)  */
-		   <&gpioa 12 GPIO_ACTIVE_LOW>,  /* reg 1: MAX6675 #1  (PA12, b8-left)  */
+		   <&gpioa 8 GPIO_ACTIVE_LOW>,   /* reg 1: MAX6675 #1  (PA8,  b4-left)  */
 		   <&gpiob 0 GPIO_ACTIVE_LOW>;   /* reg 2: MAX6675 #2  (PB0,  b6-right) */
 
 	lora_lr1121: lora@0 {
@@ -217,7 +183,7 @@
 		spi-max-frequency = <DT_FREQ_M(16)>;
 
 		reset-gpios = <&gpiob 6 GPIO_ACTIVE_LOW>;                        /* PB6, b13 (C6 D1)  */
-		busy-gpios  = <&gpioa 11 GPIO_ACTIVE_HIGH>;                      /* PA11, b7-left; C6 end stays D10 (b15-left) */
+		busy-gpios  = <&gpiob 8 GPIO_ACTIVE_HIGH>;                       /* PB8, b15 (C6 D10) */
 		event-gpios = <&gpiob 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* PB9, b16 (C6 D11) = DIO9 */
 
 		/* TODO: confirm against Core1121 R3/R4 population (HP only vs LP+HP). */

@@ -35,7 +35,6 @@
 #include <zephyr/dt-bindings/usp/lr11xx.h>
 #include <zephyr/dt-bindings/pinctrl/esp32c6-pinctrl.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
-#include <zephyr/dt-bindings/i2c/i2c.h>
 
 /* LoRaWAN credentials (DevEUI / JoinEUI / AppKey / region) live here. */
 #include "user_keys.overlay"
@@ -52,9 +51,8 @@
 		hw-wdt-out = &hw_wdt_out;
 		opto-out2 = &opto_out2;
 		opto-in1 = &opto_in1;
-		expi2c = &i2c0;
-		expuart = &uart1;
-		exp-int = &exp_int;
+		opto-in2 = &opto_in2;
+		atuart = &uart0;
 	};
 
 	/*
@@ -106,8 +104,9 @@
 	 * optocoupler reads as asserted, so a welded contactor fails toward the alarm
 	 * state rather than being missed.
 	 *
-	 * IN2 was dropped: its pin (D23) became EXP_INT for the expansion connector
-	 * (PINMAP.md §9). The field side is now 2 out / 1 in.
+	 * IN2 is on GPIO23, a clean GPIO. It moved off GPIO17 when the console went
+	 * back to the ROM UART pair (GPIO16/17); its BlackPill end stays PA5, so the
+	 * net is now a diagonal (b9-right -> b11-right) instead of a stub.
 	 */
 	opto_inputs {
 		compatible = "gpio-keys";
@@ -116,24 +115,9 @@
 			label = "contactor dry contact";
 			zephyr,code = <INPUT_KEY_0>;
 		};
-	};
-
-	/*
-	 * Expansion connector interrupt (PINMAP.md §9).
-	 *
-	 * DISABLED BY DEFAULT - see the tri-state note at the bottom of this file.
-	 * Enable with the `expansion` snippet: west build -S expansion ...
-	 *
-	 * No bias here: the pull-up belongs on the daughterboard, so an unplugged
-	 * connector leaves no half-driven net, and the pin stays genuinely Hi-Z when
-	 * the expansion is not selected.
-	 */
-	expansion_int: expansion_int {
-		compatible = "gpio-keys";
-		status = "disabled";
-		exp_int: exp-int {
-			gpios = <&gpio0 23 GPIO_ACTIVE_LOW>;    /* D23, b11-right */
-			label = "expansion interrupt";
+		opto_in2: in2 {
+			gpios = <&gpio0 23 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* D23, b11-right pad -> PA5 */
+			label = "isolated 12V input 2 (RFU)";
 			zephyr,code = <INPUT_KEY_1>;
 		};
 	};
@@ -157,27 +141,6 @@
 			output-low;
 		};
 	};
-
-	/* Expansion connector (PINMAP.md §9) - see the tri-state note below. */
-	i2c0_exp: i2c0_exp {
-		group1 {
-			pinmux = <I2C0_SCL_GPIO18>,     /* D18, b16-right */
-				 <I2C0_SDA_GPIO19>;     /* D19, b15-right */
-			drive-open-drain;
-			output-high;
-		};
-	};
-
-	uart1_exp: uart1_exp {
-		group1 {
-			pinmux = <UART1_TX_GPIO9>;      /* D9,  b17-right - strapping pin */
-			output-high;
-		};
-		group2 {
-			pinmux = <UART1_RX_GPIO22>;     /* D22, b12-right */
-			bias-pull-up;
-		};
-	};
 };
 
 /*
@@ -192,44 +155,8 @@
  * vias.
  */
 
-/*
- * ============================ EXPANSION PORT ============================
- *
- * BOTH NODES BELOW STAY DISABLED BY DEFAULT. That is deliberate, not an
- * oversight: with the peripherals disabled Zephyr never applies their pinctrl,
- * so GPIO9/18/19/22/23 stay in their reset state (input, Hi-Z) for the whole
- * life of the image.
- *
- * Why it matters: on the BlackPill socket these signals land on the Radioenge
- * pad field, whose row B is that module's GPIO2..GPIO9 (PINMAP.md §9.8). A
- * Radioenge modem and an expansion board are assembly alternatives, and a
- * Radioenge may legitimately drive those pins. Leaving our side tri-stated is
- * what makes fitting one safe. The C6's own expansion header (bottom-right)
- * does not touch the Radioenge, but it is kept symmetric so one rule covers
- * both targets and an unplugged connector never sees a driven net.
- *
- * Enable the port explicitly:   west build -S expansion -b <board> .
- *
- * i2c0's board default is GPIO6/GPIO7, which collide with the LoRa SPI bus -
- * hence the pinctrl override to GPIO18/19 above. Never enable i2c0 without it.
- */
+/* i2c0 shares GPIO6/GPIO7 with spi2; disable it so the LoRa SPI bus owns them. */
 &i2c0 {
-	pinctrl-0 = <&i2c0_exp>;
-	pinctrl-names = "default";
-	clock-frequency = <I2C_BITRATE_STANDARD>;
-	status = "disabled";
-};
-
-/*
- * Expansion UART. RS485/Modbus RTU via an auto-direction transceiver, so no
- * de-gpios/re-gpios. On the C6 the same two pads can instead be TWAI (CAN) with
- * TWAI0_TX_GPIO9 / TWAI0_RX_GPIO22 - CAN TX idles recessive (high), so D9's
- * strap rule still holds.
- */
-&uart1 {
-	pinctrl-0 = <&uart1_exp>;
-	pinctrl-names = "default";
-	current-speed = <115200>;
 	status = "disabled";
 };
 

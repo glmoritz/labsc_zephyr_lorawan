@@ -21,7 +21,7 @@ list(APPEND ZEPHYR_EXTRA_MODULES
 
 # This Zephyr's SNIPPET_ROOT defaults to ${ZEPHYR_BASE} alone — the application
 # directory is NOT searched automatically — so register ourselves here to make
-# `west build -S expansion` resolve snippets/expansion/ (PINMAP.md §9).
+# `west build -S at_modem` resolve snippets/at_modem/.
 list(APPEND SNIPPET_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
 
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
