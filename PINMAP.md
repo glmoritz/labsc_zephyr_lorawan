@@ -86,9 +86,9 @@ what firmware uses.
 | SPI MOSI | `MOSI` | PB5 | D0 | — | b12-L |
 | LR1121 chip select | `LR1121_SSEL` | PA15 | D5 | `lora-transceiver` | b9-L · `cs-gpios` reg 0 |
 | LR1121 reset | `LR1121_RESET` | PB6 | D1 | — | b13-L · active low |
-| LR1121 busy | `LR1121_BUSY` | PB8 | D10 | — | b15-L · ⚠ **BlackPill end missing in the schematic** |
+| LR1121 busy | `LR1121_BUSY` | PB8 | D10 | — | b15-L · polled every transaction |
 | LR1121 DIO9 IRQ | `LR1121_IRQ` | PB9 | D11 | — | b16-L · pull-down |
-| MAX6675 #1 CS (hot zone) | `TEMP1_SSEL` | **PA8** | D4 | `tc0` | ⚠ schematic still has **PA12** · split row, see §5.3 |
+| MAX6675 #1 CS (hot zone) | `TEMP1_SSEL` | **PA8** | D4 | `tc0` | b4-L split row (§5.3) · schematic agrees |
 | MAX6675 #2 CS (cold zone) | `TEMP2_SSEL` | PB0 | D2 | `tc1` | b6-R · `cs-gpios` reg 2 |
 | Shared UART TX | `UART_AT_TX` | PA2 | TX (GPIO16) | `atuart` | split b12-R / b8-R · console **and** AT port (§9) |
 | Shared UART RX | `UART_AT_RX` | PA3 | RX (GPIO17) | `atuart` | split b11-R / b9-R |
@@ -102,7 +102,8 @@ what firmware uses.
 
 Nets that never reach an MCU pin: `IN1_DRY1` / `IN1_DRY2` / `IN2_DRY1` /
 `IN2_DRY2` (screw terminals), `OUT1_OC` / `OUT2_OC` (optocoupler collectors),
-`PULSE_DETECTOR_OUT` (555 output), `FTDI_TX` / `FTDI_RX` (see §8).
+`PULSE_DETECTOR_OUT` (555 output). `FTDI_TX` / `FTDI_RX` couple to the AT bus
+only through a diode network, never to an MCU pin — see §8.1.
 
 Banned on the BlackPill: **PA11 / PA12** (USB D−/D+, §5.3). Free and unused:
 PA6, PB1, PB2, PB10, PC13, PA9, PA10, PB7.
@@ -461,10 +462,9 @@ Devicetree nodes and aliases now exposed:
 | `tc0` / `tc1` | GPIO4 / GPIO2 | **PA8** / PB0 |
 | `keepalive-out` / `hw-wdt-out` | GPIO21 / GPIO20 | PA1 / PA0 |
 | `opto-out2` | GPIO15 | PA4 |
-| `opto-in1` | GPIO3 | PA7 |
-| `expi2c` / `expuart` / `exp-int` | `i2c0` / `uart1` / GPIO23 | `i2c1` / `usart1` / PA8 |
+| `opto-in1` / `opto-in2` | GPIO3 / GPIO23 | PA7 / PA5 |
+| `atuart` (shared UART / AT port) | `uart0`, GPIO16/17 | `usart2`, PA2/PA3 |
 | `led0`…`led3` | *(onboard RGB — not a carrier net)* | PB12…PB15 |
-| console | `uart0`, GPIO16/17 (board default) | `usart2`, PA2/PA3 |
 
 `opto_inputs` uses the `gpio-keys` binding purely so devicetree validates; no
 input driver is enabled. Read the pins with `GPIO_DT_SPEC_GET(DT_ALIAS(opto_in1),
@@ -475,37 +475,66 @@ the thermocouples, poll the contactor feedback, or toggle the liveness-gated
 keep-alive / watchdog pulses. That is the next piece of work; the devicetree
 exposes everything it needs.
 
-### Schematic is out of sync — extracted deltas
+### Schematic ↔ firmware: verified in agreement
 
-Read out of `lora-bluepill-sch.kicad_sch` by walking wire connectivity to each
-symbol pin. The schematic is still at the **expansion-port** state, which §10
-retired. To match §2.0:
+Re-extracted from `lora-bluepill-sch.kicad_sch` by a component walk (union-find
+over every wire, then labels and power symbols attached on-segment) — the
+reliable method. Every MCU pin in §2.0 matches the schematic:
 
-| # | Schematic today | Change to |
+- **`TEMP1_SSEL` is on PA8** in the schematic, same as the firmware. PA12 (USB
+  D+) is NC. They agree — there was never a PA12 net to change.
+- **`LR1121_BUSY` reaches PB8** on the BlackPill (clean 16.5 mm wire), D10 on the
+  C6, and the Core1121 BUSY pin. No hole.
+- **PB7, PA9, PA10, PA11, PA12 are all NC** on the BlackPill, as intended.
+- The `EXP_BP_*` and `EXP_C6_*` nets touch **only** the Radioenge GPIOs and the
+  C6 pins respectively — they are dangling stubs of the dropped expansion
+  connector, harmless (single-ended, no second endpoint) but worth deleting for
+  tidiness. They do **not** land on any BlackPill pin.
+
+> A previous revision of this section claimed BUSY was unconnected, the FTDI pins
+> reached nothing, and Radioenge AT_RX was floating. **All three were false** —
+> artifacts of a coarse label-proximity tracer. The corrected findings are here
+> and in §8.1.
+
+### 8.1 The FTDI is a diode sniffer/injector on the AT bus
+
+This is a real subsystem, not a stray part. Two `1N4148` OR-gates (common-anode
+with a 10 kΩ pull-up to +3V3), built around the shared UART:
+
+**Monitor node** — FTDI RX (`U2.2`), pulled up by R3, with two diode taps:
+
+| Diode | Anode (node) | Cathode |
 |---|---|---|
-| 1 | `PA12` = `TEMP1_SSEL` | **`PA8`** = `TEMP1_SSEL` — PA12 is USB D+ (§5.3) |
-| 2 | `PB8` = `EXP_BP_SCL` | **`PB8` = `LR1121_BUSY`** |
-| 3 | `PB7` = `EXP_BP_SDA` | **NC** (reserved, §6.1) |
-| 4 | `PA9`/`PA10` = `EXP_BP_TX`/`EXP_BP_RX` | **NC** |
-| 5 | `PA8` = `EXP_BP_IRQ` | now `TEMP1_SSEL`, per row 1 |
-| 6 | C6 `D9`/`D18`/`D19`/`D22` = `EXP_C6_*` | **NC** |
-| 7 | Radioenge `GPIO2`–`GPIO6` = `EXP_BP_*` | **NC** — row B is spare again |
+| D4 | FTDI_RX | `UART_AT_TX` |
+| D5 | FTDI_RX | `UART_AT_RX` |
 
-⚠ **`LR1121_BUSY` has no BlackPill connection at all right now.** The C6 end is
-on D10, but PB8 was taken by `EXP_BP_SCL` and the BlackPill end was never
-rewired. This is a real hole, not a naming issue — the LR1121 driver polls BUSY
-on every transaction, so the STM32 build would not work as drawn. Fixing row 2
-closes it.
+The node is pulled low whenever *either* AT line goes low, so `FTDI_RX` = a
+low-dominant wired-AND of both directions. Since the AT bus is half-duplex in
+practice, that merges the MCU→modem and modem→MCU traffic into **one passive
+monitor stream** — the FTDI sniffs the whole conversation without loading it.
 
-⚠ **`FTDI_TX` / `FTDI_RX` reach nothing.** They connect only to the FTDI
-breakout (U2 pads 3 and 2); no MCU pin, no other net. Either wire them to the
-shared UART as a debug tap — `FTDI_RX` ↔ `UART_AT_TX` and `FTDI_TX` ↔
-`UART_AT_RX`, crossover — or delete the symbol. There is no second UART pair
-available on this carrier (§9), so a separate debug port is not an option.
+**Inject node** — Radioenge `AT_RX` (`U3.2`), pulled up by R6, with two taps:
 
-⚠ **Radioenge `AT_RX` (pad 2) appears unconnected.** `AT_TX` (pad 3) correctly
-reaches `UART_AT_RX`, but nothing was found on pad 2. Verify — the modem cannot
-receive commands without it.
+| Diode | Anode (node) | Cathode |
+|---|---|---|
+| D7 | AT_RX | `UART_AT_TX` |
+| D8 | AT_RX | `FTDI_TX` |
+
+The modem's RX is pulled low by *either* the MCU (`UART_AT_TX`) or the FTDI
+(`FTDI_TX`). Normally the MCU drives; the FTDI idles high and its diode
+reverse-blocks. To bench-drive the modem, the FTDI pulls low and wins. **The
+diodes are what let two push-pull TX pins share one line without contention** —
+a high driver's diode simply reverse-blocks, so the low always wins and neither
+output is ever forced.
+
+Implication for firmware: this is a debug-bench feature, and it *reinforces*
+`at_modem` (§9). When a Radioenge is fitted, `UART_AT_TX` carries live AT
+commands and the FTDI is watching — any console or log byte the MCU emits there
+would corrupt both the modem's RX and the sniff capture. The port must belong to
+the modem alone.
+
+`FTDI_RX`/`FTDI_TX` therefore have no direct MCU connection **by design** — they
+couple to the bus only through the diodes. Do not "fix" them by wiring to a pin.
 
 `peripherals.kicad_sch` is **stale BluePill-era work**: it carries `PB11` (which
 does not exist on the F411CE LQFP48), plus `I2C1_SCL`/`I2C1_SDA`,
@@ -531,10 +560,10 @@ Delete or rewrite it.
 3. The modem sites are **no longer nested** (§7): Radioenge top-left, Core1121
    bottom-left. The old overlap placement in earlier revisions of this document
    is obsolete.
-4. The schematic carries distinct `UART_AT_RX` / `UART_AT_TX` net labels, but
-   §2.2 has no dedicated AT UART — the Radioenge shares the console UART, which
-   is why §9 exists. Reconcile the schematic to that, or decide otherwise before
-   routing the modem site.
+4. Left-over **expansion stubs** in the schematic: `EXP_BP_*` on Radioenge
+   GPIO2–GPIO6 and `EXP_C6_*` on C6 D9/D18/D19/D22. Both are single-ended
+   dangling nets from the dropped expansion connector (§10) — harmless, but
+   delete them and the unplaced expansion connector symbol for tidiness.
 
 ### Hardware to verify
 
