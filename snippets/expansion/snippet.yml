@@ -1,0 +1,20 @@
+# Enables the expansion connector (PINMAP.md §9).
+#
+# The port is DISABLED in the board overlays on purpose: with the peripherals
+# off, Zephyr never applies their pinctrl and the pins stay Hi-Z, which is what
+# makes fitting a Radioenge modem on the shared pad field safe. Select this
+# snippet only on a board that actually has an expansion daughterboard fitted.
+#
+#   west build -S expansion -b <board> .
+name: expansion
+append:
+  EXTRA_CONF_FILE: expansion.conf
+boards:
+  # Regexes, so the key matches however the board target is qualified
+  # (blackpill_f411ce resolves to blackpill_f411ce/stm32f411xe).
+  /esp32c6_devkitc.*/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: esp32c6.overlay
+  /blackpill_f411ce.*/:
+    append:
+      EXTRA_DTC_OVERLAY_FILE: blackpill.overlay

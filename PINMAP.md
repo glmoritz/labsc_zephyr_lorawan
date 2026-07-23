@@ -70,6 +70,17 @@ second USB pin.
 
 ## 2. Master pin table
 
+> **§9 deltas — the firmware already implements these; the tables below do not.**
+> The socket geometry is unchanged, but four assignments moved when the expansion
+> port was added:
+>
+> | Net | was | now |
+> |---|---|---|
+> | `LORA_BUSY` | PB8 ↔ D10 (b15-L pair) | **PA11** ↔ D10 — b15-L is now split |
+> | `EXP_SCL` / `EXP_SDA` | — | **PB8** (b15-L) / **PB7** (b14-L) |
+> | `EXP_TX` / `EXP_RX` | — | PA9 / PA10 · D9 / D22 |
+> | `OPTO_IN2` | PA5 ↔ D23 | **dropped** — D23 is `EXP_INT`, PA8 on the BP side |
+
 ### 2.1 Left rows — RF, thermocouples, SPI
 
 | b | y (mm) | BlackPill | ESP32-C6 | Net | Notes |
@@ -418,8 +429,8 @@ drop to 8 MHz if it misbehaves (no impact at these data rates).
 
 ### Firmware is in sync
 
-Both overlays implement §2–§4 as of this commit, verified against the generated
-devicetree (not just a successful link):
+Both overlays implement §2–§4 **plus the §9 expansion port** as of this commit,
+verified against the generated devicetree (not just a successful link):
 
 | Target | Build | Footprint |
 |---|---|---|
@@ -433,7 +444,8 @@ Devicetree nodes and aliases now exposed:
 | `tc0` / `tc1` | GPIO4 / GPIO2 | PA12 / PB0 |
 | `keepalive-out` / `hw-wdt-out` | GPIO21 / GPIO20 | PA1 / PA0 |
 | `opto-out2` | GPIO15 | PA4 |
-| `opto-in1` / `opto-in2` | GPIO3 / GPIO23 | PA7 / PA5 |
+| `opto-in1` | GPIO3 | PA7 |
+| `expi2c` / `expuart` / `exp-int` | `i2c0` / `uart1` / GPIO23 | `i2c1` / `usart1` / PA8 |
 | `led0`…`led3` | *(onboard RGB — not a carrier net)* | PB12…PB15 |
 | console | `uart0`, GPIO16/17 (board default) | `usart2`, PA2/PA3 |
 
@@ -489,10 +501,10 @@ exposes everything it needs.
 
 ---
 
-## 9. Expansion connectors — **planned, not yet implemented**
+## 9. Expansion connectors
 
-Nothing in this section is routed or in the overlays yet. §2–§8 describe the
-board as it stands; this is the agreed design for the next revision.
+**Firmware: implemented (§9.9), disabled by default. Hardware: not routed yet.**
+§2–§8 describe the board as it stands, with the deltas listed at the head of §2.
 
 Purpose: turn the carrier into an industrial-controller base. The daughterboard
 carries 4–20 mA I/O, RS485/Modbus RTU and optionally CAN, built from **I²C
@@ -524,24 +536,45 @@ Only **one** of the two is a new footprint: the C6 header is new (bottom-right,
 where its free pads already are) and the BlackPill header reuses the Radioenge
 pad field (§9.8).
 
-### 9.2 Connector — 8-pin, identical on both
+### 9.2 Connector — 2×8 Radioenge pad field, identical at both sites
 
-| Pin | Signal |
-|---|---|
-| 1 | GND |
-| 2 | +3V3 |
-| 3 | +5V |
-| 4 | `EXP_SCL` |
-| 5 | `EXP_SDA` |
-| 6 | `EXP_TX` |
-| 7 | `EXP_RX` |
-| 8 | `EXP_INT` |
+The BlackPill site *is* the Radioenge footprint, and that dictates the pinout,
+because a Radioenge module and an expansion daughterboard are alternatives on the
+same pads. Replicate the same field at the C6 site so one daughterboard fits
+either. (Acceptable alternative: a 1×8 at the C6 site and both header footprints
+on the daughterboard, populate one.)
 
-⚠ **Logic domain only — no 12 V on this connector.** Bringing field power across
-it destroys the isolation barrier built from the DC-DC and the optocouplers. The
-daughterboard brings in its own loop supply through its own terminals and does
-its own isolation (ISO1540 on I²C, ADM2582E on RS485), so the daughterboard —
-not the carrier — owns the creepage geometry.
+| Row | Pad | Radioenge signal | Carrier net |
+|---|---|---|---|
+| **A** | 1 | GND | **GND** |
+| A | 2 | AT_RX | modem only — daughterboard leaves NC |
+| A | 3 | AT_TX | modem only — daughterboard leaves NC |
+| A | 4 | VCC | **+3V3** |
+| A | 5 | VCC | **+3V3** |
+| A | 6 | GPIO0_ADC3 | NC |
+| A | 7 | GPIO1_ADC2 | NC |
+| A | 8 | GND | **GND** |
+| **B** | 9 | GPIO2 | `EXP_SCL` |
+| B | 10 | GPIO3 | `EXP_SDA` |
+| B | 11 | GPIO4 | `EXP_TX` |
+| B | 12 | GPIO5 | `EXP_RX` |
+| B | 13 | GPIO6 | `EXP_INT` |
+| B | 14–16 | GPIO7–GPIO9 | **NC — leave unrouted** |
+
+⚠ **No power rail may go on row B.** This is the rule that makes the whole
+arrangement work. Every row-B pad faces a Radioenge GPIO, and firmware tri-stating
+(§9.9) protects a *signal* pad but cannot protect a pad tied to GND or 3V3 — a
+fitted module driving that pin would be shorted to a rail. Power therefore comes
+from row A pads 1/8 (GND) and 4/5 (VCC), which are the module's own supply pins
+and are safe by construction. Five signals on eight pads, three spare, is exactly
+the right amount of slack.
+
+⚠ **Logic domain only — no 12 V and no 5 V on this connector.** Bringing field
+power across it destroys the isolation barrier built from the DC-DC and the
+optocouplers. The daughterboard brings in its own loop supply through its own
+terminals and does its own isolation (ISO1540 on I²C, ADM2582E on RS485), so the
+daughterboard — not the carrier — owns the creepage geometry. Confirm row A's VCC
+rail is 3V3 before relying on it.
 
 ### 9.3 Pin sources
 
@@ -703,14 +736,16 @@ is 2×8 at 2.54 mm with rows 17.78 mm apart:
 | A | 1–8 | GND, AT_RX, AT_TX, VCC, VCC, GPIO0, GPIO1, GND | stays wired for the modem |
 | B | 9–16 | GPIO2 … GPIO9 — **all NC today** | **the expansion header** |
 
-Row B is exactly 8 pads, which is exactly `GND, 3V3, 5V, SCL, SDA, TX, RX, INT`.
-No new footprint, no new board area, no extra BOM line.
+Row B carries the five signals with three pads to spare; power comes from row A
+(§9.2). No new footprint, no new board area, no extra BOM line.
 
-⚠ **The Radioenge site is an assembly alternative, not a dual-fit.** Populate a
-Radioenge module **or** an expansion header on row B — never both. A fitted
-module's GPIO2–GPIO9 would land directly on the expansion I²C and UART. Mark this
-on the silkscreen; it is the kind of mistake that gets made once per production
-run.
+**A Radioenge module can still be fitted.** Row A is untouched — the modem keeps
+its own power and AT UART — and row B's five signals face module GPIOs that our
+firmware leaves tri-stated (§9.9). What must never happen is a *power rail* on
+row B, which is why §9.2 puts GND and VCC on row A only.
+
+The two are still assembly alternatives in the sense that only one board occupies
+the site at a time; they are no longer mutually destructive.
 
 ### Routing the BlackPill half
 
@@ -759,31 +794,46 @@ as well, making a three-point net so the empty socket breaks out the whole
 expansion bus — re-introduces exactly the centre-channel crossings §9.1 exists to
 avoid. It is a trade, not a freebie.)
 
-### 9.9 Firmware sketch
+### 9.9 Firmware — implemented, and tri-stated by default
 
-Not implemented. Shape of the devicetree when it is:
+**The expansion port is in both overlays and is `status = "disabled"` by
+default.** That is a safety contract, not an oversight.
 
-```dts
-/* ESP32-C6 */
-&pinctrl {
-    i2c0_exp: i2c0_exp {
-        group1 { pinmux = <I2C0_SCL_GPIO18>, <I2C0_SDA_GPIO19>;
-                 bias-pull-up; drive-open-drain; output-high; };
-    };
-    uart1_exp: uart1_exp {
-        group1 { pinmux = <UART1_TX_GPIO9>;  output-high; };
-        group2 { pinmux = <UART1_RX_GPIO22>; bias-pull-up; };
-    };
-};
+With the peripheral nodes disabled, Zephyr never applies their pinctrl, so the
+pins stay in their reset state — GPIO input, floating, genuinely Hi-Z — for the
+entire life of the image. On the BlackPill those five signals sit on Radioenge
+row B, against that module's GPIO2–GPIO6. **Our side staying tri-stated is what
+makes fitting a Radioenge safe.** The C6's own site does not face a modem, but it
+is kept symmetric so one rule covers both targets and an unplugged connector
+never sees a driven net.
 
-/* STM32 */
-&i2c1  { pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb7>; };
-&usart1 { pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>; };
+The `exp_int` node carries **no bias**: the I²C and interrupt pull-ups belong on
+the daughterboard, so an unplugged connector leaves nothing half-driven.
+
+Enable the port explicitly, only on a board that actually has a daughterboard:
+
+```
+west build -S expansion -b esp32c6_devkitc/esp32c6/hpcore .
+west build -S expansion -b blackpill_f411ce .
 ```
 
-Aliases to expose so application code is target-independent: `expi2c`, `expuart`,
-`exp-int`. Modbus RTU goes through `CONFIG_MODBUS_SERIAL` on `expuart`; with an
-auto-direction transceiver the `de-gpios`/`re-gpios` properties are omitted.
+The snippet lives in `snippets/expansion/` and flips `i2c*`, `*usart1`/`uart1`
+and `expansion_int` to `okay`, plus `CONFIG_I2C=y`. Board keys are regexes
+because `blackpill_f411ce` resolves to `blackpill_f411ce/stm32f411xe`. Note this
+Zephyr's `SNIPPET_ROOT` defaults to `${ZEPHYR_BASE}` alone, so `CMakeLists.txt`
+appends the application directory — without that the snippet is not found.
+
+| | disabled (default) | `-S expansion` |
+|---|---|---|
+| `esp32c6_devkitc/esp32c6/hpcore` | 426084 B | 426452 B |
+| `blackpill_f411ce` | 218544 B / 38136 B | 222128 B / 38264 B |
+
+Aliases, identical on both targets: `expi2c`, `expuart`, `exp-int`. Modbus RTU
+goes through `CONFIG_MODBUS_SERIAL` on `expuart`; with an auto-direction
+transceiver the `de-gpios`/`re-gpios` properties are omitted.
+
+⚠ **Do not flip these nodes to `okay` in the board overlays.** The default must
+stay disabled or the Radioenge option dies with it.
 
 ### 9.10 Verify before routing
 

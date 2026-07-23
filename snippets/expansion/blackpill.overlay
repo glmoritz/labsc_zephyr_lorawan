@@ -1,0 +1,4 @@
+/* Expansion port ON: SCL=PB8, SDA=PB7, TX=PA9, RX=PA10, INT=PA8. */
+&i2c1          { status = "okay"; };
+&usart1        { status = "okay"; };
+&expansion_int { status = "okay"; };

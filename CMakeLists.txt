@@ -19,6 +19,11 @@ list(APPEND ZEPHYR_EXTRA_MODULES
   ${CMAKE_CURRENT_SOURCE_DIR}/modules/usp_zephyr
 )
 
+# This Zephyr's SNIPPET_ROOT defaults to ${ZEPHYR_BASE} alone — the application
+# directory is NOT searched automatically — so register ourselves here to make
+# `west build -S expansion` resolve snippets/expansion/ (PINMAP.md §9).
+list(APPEND SNIPPET_ROOT ${CMAKE_CURRENT_SOURCE_DIR})
+
 find_package(Zephyr REQUIRED HINTS $ENV{ZEPHYR_BASE})
 project(lorawan_uplink)
 

@@ -53,6 +53,7 @@
 
 #include <zephyr/dt-bindings/usp/lr11xx.h>
 #include <zephyr/dt-bindings/input/input-event-codes.h>
+#include <zephyr/dt-bindings/i2c/i2c.h>
 
 /* LoRaWAN credentials (DevEUI / JoinEUI / AppKey / region). */
 #include "user_keys.overlay"
@@ -72,7 +73,9 @@
 		hw-wdt-out = &hw_wdt_out;
 		opto-out2 = &opto_out2;
 		opto-in1 = &opto_in1;
-		opto-in2 = &opto_in2;
+		expi2c = &i2c1;
+		expuart = &usart1;
+		exp-int = &exp_int;
 		led0 = &led1;
 		led1 = &led2;
 		led2 = &led3;
@@ -104,8 +107,9 @@
 		};
 	};
 
-	/* Both inputs active low with external pull-ups: a failed or unpowered
-	 * optocoupler reads as asserted, so a welded contactor fails to alarm. */
+	/* IN1 is active low with an external pull-up: a failed or unpowered
+	 * optocoupler reads as asserted, so a welded contactor fails to alarm.
+	 * IN2 was dropped — PA5 is free; PA8 now carries EXP_INT (PINMAP.md §9). */
 	opto_inputs {
 		compatible = "gpio-keys";
 		opto_in1: in1 {
@@ -113,9 +117,19 @@
 			label = "contactor dry contact";
 			zephyr,code = <INPUT_KEY_0>;
 		};
-		opto_in2: in2 {
-			gpios = <&gpioa 5 (GPIO_ACTIVE_LOW | GPIO_PULL_UP)>;   /* PA5, b9-right (C6 GPIO17) */
-			label = "isolated 12V input 2 (RFU)";
+	};
+
+	/*
+	 * Expansion connector interrupt (PINMAP.md §9). DISABLED BY DEFAULT — see
+	 * the tri-state note further down. No bias: the pull-up lives on the
+	 * daughterboard so this pin is genuinely Hi-Z when the port is not selected.
+	 */
+	expansion_int: expansion_int {
+		compatible = "gpio-keys";
+		status = "disabled";
+		exp_int: exp-int {
+			gpios = <&gpioa 8 GPIO_ACTIVE_LOW>;     /* PA8, b4-left */
+			label = "expansion interrupt";
 			zephyr,code = <INPUT_KEY_1>;
 		};
 	};
@@ -136,11 +150,44 @@
 };
 
 /*
- * Shared UART. PA9/PA10 (USART1, the board default) are unusable on the carrier:
- * at rows b5/b6 their ESP32-C6 neighbours are GND and 3V3. USART2 on PA2/PA3 is
- * the only UART both sockets can reach.
+ * Shared console UART. USART2 on PA2/PA3 is the only UART both sockets can
+ * reach as a shared net (the C6 end is its ROM pair GPIO16/17).
+ */
+
+/*
+ * ============================ EXPANSION PORT ============================
+ *
+ * BOTH NODES BELOW STAY DISABLED BY DEFAULT. That is deliberate, not an
+ * oversight: with the peripherals disabled Zephyr never applies their pinctrl,
+ * so PB7, PB8, PA8, PA9 and PA10 stay in their reset state — GPIO input,
+ * floating, genuinely Hi-Z — for the whole life of the image.
+ *
+ * Why it matters: these five signals land on the Radioenge pad field, and its
+ * row B is that module's GPIO2..GPIO9 (PINMAP.md §9.8). A Radioenge modem and
+ * an expansion board are assembly alternatives on the same pads, and a fitted
+ * Radioenge may legitimately drive its GPIOs. Our side staying tri-stated is
+ * exactly what makes fitting one safe — so DO NOT flip these to "okay" here.
+ *
+ * Enable the port explicitly:   west build -S expansion -b blackpill_f411ce .
+ *
+ * PB7 is the only free SDA-capable pin on the F411, which forces I2C1 and
+ * therefore PB8 for SCL — that is why LORA_BUSY moved to PA11.
+ */
+&i2c1 {
+	pinctrl-0 = <&i2c1_scl_pb8 &i2c1_sda_pb7>;
+	pinctrl-names = "default";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	status = "disabled";
+};
+
+/*
+ * Expansion UART. RS485/Modbus RTU via an auto-direction transceiver, so no
+ * de-gpios/re-gpios. The F411 has no CAN, so the CAN option is C6-only.
  */
 &usart1 {
+	pinctrl-0 = <&usart1_tx_pa9 &usart1_rx_pa10>;
+	pinctrl-names = "default";
+	current-speed = <115200>;
 	status = "disabled";
 };
 
@@ -170,7 +217,7 @@
 		spi-max-frequency = <DT_FREQ_M(16)>;
 
 		reset-gpios = <&gpiob 6 GPIO_ACTIVE_LOW>;                        /* PB6, b13 (C6 D1)  */
-		busy-gpios  = <&gpiob 8 GPIO_ACTIVE_HIGH>;                       /* PB8, b15 (C6 D10) */
+		busy-gpios  = <&gpioa 11 GPIO_ACTIVE_HIGH>;                      /* PA11, b7-left; C6 end stays D10 (b15-left) */
 		event-gpios = <&gpiob 9 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;    /* PB9, b16 (C6 D11) = DIO9 */
 
 		/* TODO: confirm against Core1121 R3/R4 population (HP only vs LP+HP). */

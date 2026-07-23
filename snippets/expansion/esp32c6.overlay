@@ -1,0 +1,4 @@
+/* Expansion port ON: SCL=GPIO18, SDA=GPIO19, TX=GPIO9, RX=GPIO22, INT=GPIO23. */
+&i2c0          { status = "okay"; };
+&uart1         { status = "okay"; };
+&expansion_int { status = "okay"; };
