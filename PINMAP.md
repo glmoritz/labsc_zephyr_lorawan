@@ -362,16 +362,31 @@ drawing — worth one meter check.
 | Item | Placement |
 |---|---|
 | ESP32-C6 footprint | BlackPill origin + **(X −1.27, Y +10.16)**, rot 0 |
-| Core1121 (LR1121) | **Y +17.78** relative to BlackPill origin — puts CS / SCLK / RESET on the exact y of rows b9 / b10 / b13 |
-| Radioenge modem | Core1121 + **(X +11.43, Y +17.78)**, rot 0 — rows at −6.35 / 0 / +11.43 / +15.24, min gap 3.81 mm |
+| Core1121 (LR1121) | **bottom-left**. **Y +17.78** relative to BlackPill origin — puts CS / SCLK / RESET on the exact y of rows b9 / b10 / b13. X not yet fixed |
+| Radioenge modem | **top-left**, free-standing. X/Y not yet fixed |
+| C6 expansion header | **bottom-right**, beside rows b11–b17 right (§9.8) |
+| BlackPill expansion header | **Radioenge site, row B** — assembly alternative to the modem (§9.8) |
 | MAX6675 ×2 | right-angle 1x5 headers on the **top edge**, SCK+MISO bussed along it |
 | Isolated 12 V block | **right edge**: 555, optocouplers, screw terminals |
 
-Floorplan: RF + thermocouples left, MCU sockets centre, isolated 12 V right. The
-mirror image costs 9 crossing nets instead of 2.
+Floorplan: RF + thermocouples left, MCU sockets centre, isolated 12 V right,
+expansion bottom-right. The mirror image costs 9 crossing nets instead of 2.
 
-Estimated inter-socket wiring cost: **~6–8 vias**, plus ~4 for the UART crossing
-the centre channel to reach the Radioenge.
+**The two modems are no longer nested.** An earlier revision overlapped them
+(Radioenge = Core1121 + (X +11.43, Y +17.78), four columns at −6.35 / 0 / +11.43
+/ +15.24) to fit both in 21.59 mm instead of ~43 mm. They now sit at separate
+sites, top-left and bottom-left. This costs board area but is what makes the
+Radioenge pad field usable as the BlackPill expansion connector (§9.8) — in the
+nested arrangement only its outer row cleared a fitted Core1121.
+
+Estimated inter-socket wiring cost: **~6–8 vias**, plus ~4 for the console UART
+crossing the centre channel to reach the Radioenge — that crossing is unchanged
+by the move, since the console pair (C6 GPIO16/17, BP PA2/PA3) is on the **right**
+column and the Radioenge is on the left.
+
+⚠ Edge budget is now full: top = both USB-C plus two MAX6675 headers; left =
+both modem sites plus the BlackPill expansion header; right = isolated 12 V;
+bottom-right = C6 expansion header.
 
 ### Power
 
@@ -442,10 +457,17 @@ exposes everything it needs.
    footprint and with the physical board. Switch the schematic over to it and
    retire the old symbol.
 2. ⚠ **`LoRaModuleRadioenge.kicad_mod` is parallel-numbered, not U-shaped** —
-   pad 1 and pad 16 sit diagonally opposite. Pads 9–16 are unused so that half is
-   harmless, but confirm the module's real pin 1 is at the end this footprint
-   places it, or the used row (`GND, AT_RX, AT_TX, VCC …`) mirrors and AT_RX/AT_TX
-   swap.
+   pad 1 sits at (0, 0) and pad 9 directly beside it at (−17.78, 0), so pad 1 and
+   pad 16 end up diagonally opposite. Confirm the module's real pin 1 is at the
+   end this footprint places it, or **both** rows mirror: `AT_RX`/`AT_TX` swap on
+   row A and the whole expansion pinout reverses on row B.
+   **This now matters much more than it did.** Row B (pads 9–16) is no longer
+   spare — §9.8 makes it the BlackPill expansion header, so a mirrored footprint
+   silently reverses `GND, 3V3, 5V, SCL, SDA, TX, RX, INT`. Verify against the
+   physical module before routing.
+3. The modem sites are **no longer nested** (§7): Radioenge top-left, Core1121
+   bottom-left. The old overlap placement in earlier revisions of this document
+   is obsolete.
 
 ### Hardware to verify
 
@@ -494,9 +516,13 @@ too. Both topologies need exactly one relocation (§9.4). The centre channel is
 the whole argument.
 
 Parity is preserved at the **feature** level: both connectors carry the same
-five signals with the same pinout, so one daughterboard with one header plugs
-into whichever socket was populated. Only one MCU is ever fitted, so only one
+five signals with the same pinout, so one daughterboard with one header serves
+whichever socket was populated. Only one MCU is ever fitted, so only one
 connector is ever live. No jumpers, nothing to mis-set.
+
+Only **one** of the two is a new footprint: the C6 header is new (bottom-right,
+where its free pads already are) and the BlackPill header reuses the Radioenge
+pad field (§9.8).
 
 ### 9.2 Connector — 8-pin, identical on both
 
@@ -651,16 +677,87 @@ LED. Not worth it.
 PB12–PB15, PC13), but a daughterboard that only half-works depending on which MCU
 is fitted defeats the reason this carrier exists. Bring them out as test points.
 
-### 9.8 Placement
+### 9.8 Placement — one new header, one reused pad field
 
-Both connectors can share the **bottom edge**, side by side: the C6's five pads
-are already at rows b11–b17 right, and the BlackPill's UART group (b4–b6 left)
-makes a ~30 mm run down the outboard-left free space that never enters the centre
-channel. Alternatively put the BlackPill connector on the left edge.
+Each MCU's five expansion pads sit on **opposite columns**, and that fact alone
+fixes the placement:
 
-Edge budget is now tight — top edge carries both USB-C plus the two MAX6675
-right-angle headers, one edge carries the 12 V screw terminals, and the expansion
-connectors want a third.
+| | free pads | column | corner |
+|---|---|---|---|
+| ESP32-C6 | D9, D18, D19, D22, D23 | **right** (b11–b17) | bottom-right |
+| BlackPill | PB7, PB8 / PA8, PA9, PA10 | **left** (b14–b15 / b4–b6) | bottom-left / top-left |
+
+The C6 has **zero** free pads on its left column — verified against the symbol,
+all fifteen are SPI/LoRa, power, native USB, or D8-reserved. So no single shared
+connector can serve both sockets without dragging five nets across the whole
+board. They get one site each.
+
+**C6 → new 1×8 header, bottom-right**, next to rows b11–b17 right. All five pads
+are already there; the runs are a few mm and never approach the centre channel.
+
+**BlackPill → the Radioenge pad field, row B.** `LoRaModuleRadioenge.kicad_mod`
+is 2×8 at 2.54 mm with rows 17.78 mm apart:
+
+| Row | Pads | Module signals | Use |
+|---|---|---|---|
+| A | 1–8 | GND, AT_RX, AT_TX, VCC, VCC, GPIO0, GPIO1, GND | stays wired for the modem |
+| B | 9–16 | GPIO2 … GPIO9 — **all NC today** | **the expansion header** |
+
+Row B is exactly 8 pads, which is exactly `GND, 3V3, 5V, SCL, SDA, TX, RX, INT`.
+No new footprint, no new board area, no extra BOM line.
+
+⚠ **The Radioenge site is an assembly alternative, not a dual-fit.** Populate a
+Radioenge module **or** an expansion header on row B — never both. A fitted
+module's GPIO2–GPIO9 would land directly on the expansion I²C and UART. Mark this
+on the silkscreen; it is the kind of mistake that gets made once per production
+run.
+
+### Routing the BlackPill half
+
+The STM32's five signals are structurally split between the two ends of its left
+column and cannot be moved:
+
+- **PA8 / PA9 / PA10** (b4–b6, y 10.16–15.24) are already at **top-left**, beside
+  the Radioenge site. Short runs. `usart1` has no other free mapping.
+- **PB7 / PB8** (b14–b15, y 35.56–38.10) are at **bottom-left** and must reach the
+  header ~23 mm north. PB7 is the only free SDA-capable pin on the F411, which
+  forces I²C1 and therefore PB8 — there is no alternative.
+
+Moving two nets beats moving three, so the header goes at the **top-left**
+(Radioenge) site rather than beside the I²C pair.
+
+⚠ **The I²C pair must not cross the LR1121's SPI fan-out.** The Core1121 now sits
+bottom-left, and its fan-out occupies the band feeding rows b9–b16 left — the same
+corridor a naive PB7/PB8 run would take. Route them through the gap between the
+two modem sites, or around the west edge. Keep them on the **top** layer: the
+bottom-layer pour is the SPI return path (§7), and slicing it under the fastest
+signal on the board to save 10 mm of trace is the wrong trade. ~23 mm of extra
+I²C length costs perhaps 3 pF, which at 400 kHz is nothing.
+
+### Daughterboard
+
+Connect by **ribbon**, not by stacking. The two sites are a 1×8 on the bottom-right
+and a 1×8 in the Radioenge field on the left; a ribbon means one daughterboard
+design serves both and does not care which MCU was fitted. Identical pin order on
+both headers (§9.2).
+
+### Bottom-side breakout — keep the option open
+
+Only one socket is ever populated, so **the empty one is already a full breakout**
+of every net that touches it. Soldering a header to its pads from the bottom gives
+free access for probing and patching.
+
+Be precise about what that is: it exposes all shared nets plus that MCU's own
+nets — it does **not** expose the fitted MCU's spare pins. With the C6 fitted, the
+BlackPill pads at PA8, PB10, PB1 and PB2 are NC unless something is routed there.
+
+**Rule: keepout for tall parts on the bottom side under both socket footprints.**
+Costs nothing now and keeps the option alive permanently.
+
+(The tempting extension — routing each C6 expansion signal to a BlackPill NC pad
+as well, making a three-point net so the empty socket breaks out the whole
+expansion bus — re-introduces exactly the centre-channel crossings §9.1 exists to
+avoid. It is a trade, not a freebie.)
 
 ### 9.9 Firmware sketch
 

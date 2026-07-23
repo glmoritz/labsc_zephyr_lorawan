@@ -191,13 +191,14 @@ the C6 and on `usart2` (PA2/PA3, 115200) on the STM32 — the same carrier net.
 Design decisions already fixed, recorded here so the layout and the firmware stay
 in agreement:
 
-- **Radio modems are nested too.** The Core1121 (rows 15.24 mm apart) and the
-  Radioenge modem (17.78 mm) cannot overlap concentrically — the socket strips
-  would be 1.27 mm apart and physically collide. Place the **Radioenge footprint
-  at Core1121 + (X +11.43, Y +17.78), rotation 0**: rows then fall at −6.35 / 0 /
-  +11.43 / +15.24, min gap 3.81 mm, 21.59 mm total instead of ~43 mm side by
-  side. Both signal rows face the MCU sockets. Only Radioenge pads 1–5 (GND,
-  AT_RX, AT_TX, VCC) are electrically used; its second row is mechanical.
+- **The two modems sit at separate sites: Radioenge top-left, Core1121
+  bottom-left.** An earlier revision nested them (Radioenge at Core1121 +
+  (X +11.43, Y +17.78), four columns at −6.35 / 0 / +11.43 / +15.24, 21.59 mm
+  total instead of ~43 mm side by side) — **that is obsolete**. Un-nesting costs
+  board area and buys the Radioenge pad field as the BlackPill expansion header;
+  see `PINMAP.md` §9.8. Only Radioenge row A (GND, AT_RX, AT_TX, VCC) is wired for
+  the modem; row B (pads 9–16) becomes the expansion connector, and the two are
+  **assembly alternatives — never populate both**.
 - **Place the Core1121 at Y +17.78** relative to the BlackPill origin and its
   CS / SCLK / RESET pads land on the *exact* y of carrier rows b9 / b10 / b13 —
   three dead-straight tracks. Only MISO/MOSI cross (the module orders them
